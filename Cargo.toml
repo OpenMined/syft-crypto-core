@@ -1,0 +1,17 @@
+[package]
+name = "syft-crypto-core"
+version = "0.1.0"
+edition = "2024"
+authors = ["Khoa Nguyen <khoa@openmined.org>"]
+description = "End-to-end encrypted communication and file synchronization for SyftBox using the Signal protocol"
+license = "Apache-2.0"
+repository = "https://github.com/OpenMined/syft-crypto-core"
+keywords = ["encryption", "e2e", "signal-protocol", "privacy", "cryptography", "syftbox"]
+categories = ["command-line-utilities", "science", "cryptography", "ai-safety"]
+
+
+[dependencies]
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal.git", tag = "v0.82.0" }
+rand = "0.9"
+rand_chacha = "0.9"
+tokio = { version = "1", features = ["full"] }
