@@ -25,7 +25,7 @@ build-release:
 
 # Run all tests
 test:
-    cargo test --workspace --all-features --verbose
+    cargo test --workspace --all-features --verbose -- --nocapture
 
 # Run tests with ignored tests included
 test-all:
@@ -33,7 +33,7 @@ test-all:
 
 # Run a specific test
 test-single TEST:
-    cargo test {{TEST}} --verbose
+    cargo test {{TEST}} --verbose -- --nocapture
 
 # Format all Rust code
 format:
