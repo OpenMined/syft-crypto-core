@@ -1,20 +1,42 @@
-[package]
-name = "syft-crypto-core"
+[workspace]
+resolver = "2"  # so that dev-dependency features don't leak into products
+members = ["protocol", "cli"]
+default-members = ["protocol"]  # Build only protocol by default
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 authors = ["Khoa Nguyen <khoa@openmined.org>"]
-description = "End-to-end encrypted communication and file synchronization for SyftBox using the Signal protocol"
 license = "Apache-2.0"
 repository = "https://github.com/OpenMined/syft-crypto-core"
-keywords = ["encryption", "e2e", "signal-protocol", "privacy", "cryptography", "syftbox"]
-categories = ["command-line-utilities", "science", "cryptography", "ai-safety"]
+keywords = ["encryption", "e2e", "signal-protocol", "privacy", "cryptography"]
+categories = ["cryptography"]
+rust-version = "1.90.0"
 
+[workspace.lints.clippy]
+# Prefer TryFrom between integers unless truncation is desired
+cast_possible_truncation = "warn"
 
-[dependencies]
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(fuzzing)',
+    'cfg(tokio_unstable)',
+] }
+
+[workspace.dependencies]
+syft-crypto-protocol = { path = "protocol" }
+# Core cryptographic dependencies
 libsignal-protocol = { git = "https://github.com/signalapp/libsignal.git", tag = "v0.85.3" }
 rand = "0.9"
 rand_chacha = "0.9"
-tokio = { version = "1", features = ["full"] }
 hex = "0.4"
 hkdf = "0.12"
 sha2 = "0.10"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# CLI dependencies
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

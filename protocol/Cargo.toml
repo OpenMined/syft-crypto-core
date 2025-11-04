@@ -1,0 +1,27 @@
+[package]
+name = "syft-crypto-protocol"
+description = "Post-quantum cryptographic protocol implementation for SyftBox using Signal's PQXDH"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+libsignal-protocol.workspace = true
+rand.workspace = true
+hex.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+rand_chacha.workspace = true
+tokio.workspace = true
+
+[lib]
+name = "syft_crypto_protocol"
+path = "src/lib.rs"

@@ -1,0 +1,28 @@
+[package]
+name = "syft-crypto-cli"
+description = "Command-line interface for SyftBox cryptographic operations"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Our protocol library
+syft-crypto-protocol.workspace = true
+
+# CLI dependencies
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+
+[[bin]]
+name = "syft-crypto"
+path = "src/main.rs"

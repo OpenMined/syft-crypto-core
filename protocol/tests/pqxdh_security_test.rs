@@ -4,7 +4,7 @@
 /// corrupted data, and potential attack vectors. Inspired by libsignal's security tests.
 use libsignal_protocol::*;
 use rand::SeedableRng;
-use syft_crypto_core::PublicKeyBundle;
+use syft_crypto_protocol::PublicKeyBundle;
 
 /// Test that PublicKeyBundle rejects corrupted EC prekey signature
 #[test]
