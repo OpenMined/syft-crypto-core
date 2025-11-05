@@ -5,6 +5,7 @@
 
 use libsignal_protocol::*;
 use rand::SeedableRng;
+use syft_crypto_protocol::PublicKeyBundle;
 
 /// Test 1: Generate the 3 keys required for PQXDH
 ///
@@ -84,7 +85,6 @@ fn test_generate_3_keys() -> Result<(), SignalProtocolError> {
     println!("   📊 Signature size: {} bytes", pq_signature.len());
     println!("   🔑 Type: Kyber1024 (for KEM)");
     println!("   🔏 Signed by: Identity key");
-    println!("   ⚠️  Note: Called 'last-resort' because it's reused (not one-time)");
 
     // === Summary ===
     println!();
@@ -112,7 +112,6 @@ fn test_generate_3_keys() -> Result<(), SignalProtocolError> {
             + signed_pre_key_signature.len()
             + pq_signature.len()
     );
-    println!("\n✅ No one-time prekeys (OPK, PQOPK) - simplified for SyftBox");
     println!("{}", "=".repeat(60));
 
     Ok(())
@@ -222,19 +221,22 @@ fn test_key_bundle_serialization() -> Result<(), SignalProtocolError> {
     let signed_prekey_pair = KeyPair::generate(&mut rng);
     let pq_prekey_pair = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
 
-    // Sign both prekeys
-    let spk_signature = identity_key_pair
-        .private_key()
-        .calculate_signature(&signed_prekey_pair.public_key.serialize(), &mut rng)?;
-
-    let pqspk_signature = identity_key_pair
-        .private_key()
-        .calculate_signature(&pq_prekey_pair.public_key.serialize(), &mut rng)?;
+    // Create PublicKeyBundle (automatically signs both prekeys)
+    println!("\n📝 Creating PublicKeyBundle...");
+    let bundle = PublicKeyBundle::new(
+        &identity_key_pair,
+        &signed_prekey_pair,
+        &pq_prekey_pair,
+        &mut rng,
+    )?;
+    println!("   ✅ Bundle created with both signatures");
 
     // Serialize public components (what goes into DID document)
-    let identity_public_bytes = identity_key_pair.public_key().serialize();
-    let spk_public_bytes = signed_prekey_pair.public_key.serialize();
-    let pqspk_public_bytes = pq_prekey_pair.public_key.serialize();
+    let identity_public_bytes = bundle.identity_key.serialize();
+    let spk_public_bytes = bundle.signed_pre_key.serialize();
+    let pqspk_public_bytes = bundle.pq_pre_key.serialize();
+    let spk_signature = &bundle.signed_pre_key_signature;
+    let pqspk_signature = &bundle.pq_pre_key_signature;
 
     println!("\n📦 Public Key Bundle (for DID document):");
     println!("   IK (Identity Key):");
@@ -293,10 +295,10 @@ fn test_key_bundle_serialization() -> Result<(), SignalProtocolError> {
     // Verify signatures (using original identity key pair)
     let sig1_ok = identity_key_pair
         .public_key()
-        .verify_signature(&spk_public_bytes, &spk_signature);
+        .verify_signature(&spk_public_bytes, spk_signature);
     let sig2_ok = identity_key_pair
         .public_key()
-        .verify_signature(&pqspk_public_bytes, &pqspk_signature);
+        .verify_signature(&pqspk_public_bytes, pqspk_signature);
     assert!(
         sig1_ok && sig2_ok,
         "Signatures should verify after deserialization"
@@ -346,7 +348,7 @@ fn test_key_rotation() -> Result<(), SignalProtocolError> {
 
     println!("   ✅ New SPK generated and signed");
     println!("   ✅ New PQSPK generated and signed");
-    println!("   ⚠️  Identity key remains unchanged");
+    println!("   ️✅ Identity key remains unchanged");
 
     // Verify new keys are different
     assert_ne!(
@@ -447,7 +449,6 @@ fn test_key_size_comparison() {
     println!("\n💡 Observations:");
     println!("   - Classical keys (IK, SPK) are tiny (~33 bytes each)");
     println!("   - PQ key (PQSPK) is much larger (~1.5 KB public, ~3.1 KB private)");
-    println!("   - This is acceptable for SyftBox file-based storage");
     println!("   - Trade-off: Larger keys for quantum resistance");
 
     println!();

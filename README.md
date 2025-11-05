@@ -4,37 +4,76 @@ End-to-end encrypted communication and file synchronization for SyftBox using th
 
 ## Overview
 
-This crate provides cryptographic primitives for secure messaging and file synchronization in SyftBox, built on top of [libsignal's implementation](https://github.com/signalapp/libsignal) of the Signal protocol. It includes support for the X3DH key agreement protocol with post-quantum security via Kyber.
+This crate provides cryptographic primitives for secure messaging and file synchronization in SyftBox, built on top of [libsignal's implementation](https://github.com/signalapp/libsignal) of the Signal protocol. It includes support for the PQXDH key agreement protocol for post-quantum security via Kyber.
 
-## Features
+## Project Structure
 
+Following Signal's workspace pattern:
 
-## Quick Start
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-syft-crypto-core = "0.1.0"
+```
+syft-crypto-core/
+├── protocol/           # Core crypto library (keep as small as possible for easy security audit)
+│   ├── src/
+│   │   ├── lib.rs
+│   │   └── pqxdh_params.rs
+│   └── tests/          # 24 comprehensive tests
+│
+├── cli/                # Command-line interface to use the API in protocol/
+│   └── src/
+│       └── main.rs
+│
+└── Cargo.toml          # Workspace configuration
 ```
 
 ## Development
 
+### Quick Start
+
 ```bash
-# Install development tools
-just install-dev-tools
+just --list           # Show all commands
+just build            # Build workspace
+just test             # Run all tests
+```
 
-# Run all tests
-just test
+### Build Commands
 
-# Run all pre-commit checks
-just pre-commit
+```bash
+just build            # Build entire workspace
+just build-protocol   # Build only protocol library
+just build-cli        # Build only CLI
+just build-release    # Release build
+```
 
-# Format code
-just format
+### Test Commands
 
-# Run linter
-just lint
+```bash
+just test             # Run all tests
+just test-protocol    # Protocol tests only
+just test-verbose     # Tests with output
+```
+
+### Code Quality
+
+```bash
+just format           # Format code
+just lint             # Run clippy
+just pre-commit       # Format + lint + test
+```
+
+### CLI Commands
+
+```bash
+just run <ARGS>       # Run CLI with arguments
+just cli-help         # Show CLI help
+just keygen-help      # Show keygen help
+```
+
+### Utilities
+
+```bash
+just clean            # Clean build artifacts
+just doc              # Generate documentation
+just tree             # Show project structure
 ```
 
 ## License

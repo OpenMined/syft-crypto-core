@@ -5,7 +5,7 @@
 
 use libsignal_protocol::*;
 use rand::SeedableRng;
-use syft_crypto_core::{AlicePqxdhParameters, BobPqxdhParameters, PublicKeyBundle};
+use syft_crypto_protocol::{AlicePqxdhParameters, BobPqxdhParameters, PublicKeyBundle};
 
 #[test]
 fn test_public_key_bundle_creation() {
