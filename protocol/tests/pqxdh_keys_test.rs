@@ -5,7 +5,7 @@
 
 use libsignal_protocol::*;
 use rand::SeedableRng;
-use syft_crypto_core::PublicKeyBundle;
+use syft_crypto_protocol::PublicKeyBundle;
 
 /// Test 1: Generate the 3 keys required for PQXDH
 ///
