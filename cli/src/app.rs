@@ -62,20 +62,19 @@ pub(crate) fn ensure_vault_layout(vault: &Path) -> Result<()> {
 }
 
 pub(crate) fn resolve_data_path(context: &AppContext, input: &Path) -> PathBuf {
-    let expanded = expand_home(input);
-    if expanded.is_absolute() {
-        expanded
-    } else {
-        context.data_root.join(expanded)
-    }
+    resolve_under_root(&context.data_root, input)
 }
 
 pub(crate) fn resolve_shadow_path(context: &AppContext, input: &Path) -> PathBuf {
+    resolve_under_root(&context.shadow_root, input)
+}
+
+fn resolve_under_root(root: &Path, input: &Path) -> PathBuf {
     let expanded = expand_home(input);
     if expanded.is_absolute() {
         expanded
     } else {
-        context.shadow_root.join(expanded)
+        root.join(expanded)
     }
 }
 

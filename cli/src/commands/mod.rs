@@ -2,9 +2,10 @@ mod file;
 mod key;
 
 use clap::{Parser, Subcommand};
+use std::fmt::Display;
 use std::path::PathBuf;
 
-use crate::app::{AppContext, Result};
+use crate::app::{AppContext, Result, yes_no};
 
 pub(crate) use file::FileCommand;
 pub(crate) use key::KeyCommand;
@@ -60,6 +61,36 @@ pub(crate) fn handle_command(context: &AppContext, command: Command) -> Result<(
     match command {
         Command::Key(cmd) => key::handle_key_command(context, cmd),
         Command::File(cmd) => file::handle_file_command(context, cmd),
+    }
+}
+
+pub(crate) struct PlanPrinter;
+
+impl PlanPrinter {
+    pub(crate) fn new(title: &str) -> Self {
+        println!("[plan] {}", title);
+        Self
+    }
+
+    pub(crate) fn field<T: Display>(&self, name: &str, value: T) -> &Self {
+        println!("  {}: {}", name, value);
+        self
+    }
+
+    pub(crate) fn bool(&self, name: &str, value: bool) -> &Self {
+        self.field(name, yes_no(value))
+    }
+
+    pub(crate) fn opt<T: Display>(&self, name: &str, value: Option<T>) -> &Self {
+        if let Some(value) = value {
+            self.field(name, value);
+        }
+        self
+    }
+
+    pub(crate) fn info(&self, message: &str) -> &Self {
+        println!("  {}", message);
+        self
     }
 }
 

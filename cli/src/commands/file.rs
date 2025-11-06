@@ -2,6 +2,7 @@ use crate::app::{
     AppContext, Result, atomic_write, detect_single_identity, ensure_vault_layout,
     resolve_data_path, resolve_shadow_path, yes_no,
 };
+use crate::commands::PlanPrinter;
 use crate::envelope::ParsedEnvelope;
 use crate::protocol_interface::{
     CURRENT_VERSION, MAGIC, build_stub_envelope, decrypt_allow_plaintext, decrypt_bytes,
@@ -105,163 +106,57 @@ pub(crate) struct FileInspectArgs {
 }
 
 fn handle_file_encrypt(context: &AppContext, args: FileEncryptArgs) -> Result<()> {
-    println!("[plan] file encrypt");
-    println!("  dry-run: {}", yes_no(args.dry_run));
+    let plan = PlanPrinter::new("file encrypt");
+    plan.bool("dry-run", args.dry_run);
 
-    let operation = if let Some(relative) = &args.relative {
-        println!("  mode: datasite/shadow (relative)");
-        println!("  vault: {}", context.vault_path.display());
-        println!("  data root: {}", context.data_root.display());
-        println!("  shadow root: {}", context.shadow_root.display());
-        println!("  relative path: {}", relative.display());
-        if let Some(recipient) = &args.recipient {
-            println!("  recipient: {}", recipient);
-        }
-        if let Some(sender) = &args.sender {
-            println!("  sender identity: {}", sender);
-        }
-        println!("  TODO: fetch recipient bundle, establish PQXDH session, and seal file");
-
-        if args.dry_run {
-            println!("  dry-run complete: no ciphertext produced");
-            return Ok(());
-        }
-
-        ensure_vault_layout(&context.vault_path)?;
-        let shadow_path = resolve_shadow_path(context, relative);
-        let data_path = resolve_data_path(context, relative);
-        println!("  shadow source: {}", shadow_path.display());
-        println!("  datasite destination: {}", data_path.display());
-
-        EncryptPlan::Relative {
-            plaintext: shadow_path,
-            ciphertext: data_path,
-        }
-    } else {
-        let src = args
-            .src
-            .as_ref()
-            .ok_or_else(|| "--src or --relative is required".to_string())?;
-        let dest = args
-            .dest
-            .as_ref()
-            .ok_or_else(|| "--dest or --relative is required".to_string())?;
-
-        println!("  mode: direct file");
-        println!("  source: {}", src.display());
-        println!("  destination: {}", dest.display());
-        if let Some(sender) = &args.sender {
-            println!("  sender identity: {}", sender);
-        }
-        if let Some(recipient) = &args.recipient {
-            println!("  recipient identity: {}", recipient);
-        }
-        println!("  TODO: fetch recipient bundle, establish PQXDH session, and seal file");
-
-        if args.dry_run {
-            println!("  dry-run complete: no ciphertext produced");
-            return Ok(());
-        }
-
-        EncryptPlan::Direct {
-            plaintext: src.to_path_buf(),
-            ciphertext: dest.to_path_buf(),
-        }
+    let operation = resolve_encrypt_plan(context, &args, &plan)?;
+    let Some(operation) = operation else {
+        return Ok(());
     };
 
-    let sender_identity = match &args.sender {
-        Some(identity) => identity.clone(),
-        None => detect_single_identity(&context.vault_path)?,
-    };
-    println!("  using sender identity: {}", sender_identity);
+    let sender_identity = identity_or_detect(args.sender.as_deref(), &context.vault_path)?;
+    plan.field("using sender identity", &sender_identity);
 
-    let plaintext = fs::read(operation.plaintext_path())?;
+    let plaintext = fs::read(operation.input_path())?;
     let ciphertext = encrypt_bytes(&sender_identity, args.recipient.as_deref(), &plaintext)?;
     let recipients: Vec<String> = args.recipient.iter().cloned().collect();
     let envelope = build_stub_envelope(&sender_identity, &recipients, &ciphertext, None)?;
 
-    atomic_write(operation.ciphertext_path(), &envelope)?;
-    operation.print_completion();
+    atomic_write(operation.output_path(), &envelope)?;
+    match operation.mode {
+        OperationMode::Relative => println!(
+            "  wrote SYC envelope atomically to {}",
+            operation.output_path().display()
+        ),
+        OperationMode::Direct => println!(
+            "  wrote SYC envelope to {}",
+            operation.output_path().display()
+        ),
+    }
 
     Ok(())
 }
 
 fn handle_file_decrypt(context: &AppContext, args: FileDecryptArgs) -> Result<()> {
-    println!("[plan] file decrypt");
-    println!("  dry-run: {}", yes_no(args.dry_run));
-    println!("  skip schema checks: {}", yes_no(args.skip_checks));
+    let plan = PlanPrinter::new("file decrypt");
+    plan.bool("dry-run", args.dry_run)
+        .bool("skip schema checks", args.skip_checks);
 
-    let operation = if let Some(relative) = &args.relative {
-        println!("  mode: datasite/shadow (relative)");
-        println!("  vault: {}", context.vault_path.display());
-        println!("  data root: {}", context.data_root.display());
-        println!("  shadow root: {}", context.shadow_root.display());
-        println!("  relative path: {}", relative.display());
-        if let Some(identity) = &args.identity {
-            println!("  preferred identity: {}", identity);
-        } else {
-            println!("  preferred identity: auto-detect");
-        }
-        println!("  TODO: verify sender authenticity and check key availability prior to decrypt");
-
-        if args.dry_run {
-            println!("  dry-run complete: no plaintext extracted");
-            return Ok(());
-        }
-
-        ensure_vault_layout(&context.vault_path)?;
-        let data_path = resolve_data_path(context, relative);
-        let shadow_path = resolve_shadow_path(context, relative);
-        println!("  datasite source: {}", data_path.display());
-        println!("  shadow destination: {}", shadow_path.display());
-
-        DecryptPlan::Relative {
-            encrypted: data_path,
-            plaintext: shadow_path,
-        }
-    } else {
-        let src = args
-            .src
-            .as_ref()
-            .ok_or_else(|| "--src or --relative is required".to_string())?;
-        let dest = args
-            .dest
-            .as_ref()
-            .ok_or_else(|| "--dest or --relative is required".to_string())?;
-
-        println!("  mode: direct file");
-        println!("  source: {}", src.display());
-        println!("  destination: {}", dest.display());
-        if let Some(identity) = &args.identity {
-            println!("  preferred identity: {}", identity);
-        } else {
-            println!("  preferred identity: auto-detect");
-        }
-
-        if args.dry_run {
-            println!("  dry-run complete: no plaintext extracted");
-            return Ok(());
-        }
-
-        DecryptPlan::Direct {
-            encrypted: src.to_path_buf(),
-            plaintext: dest.to_path_buf(),
-        }
+    let operation = resolve_decrypt_plan(context, &args, &plan)?;
+    let Some(operation) = operation else {
+        return Ok(());
     };
 
-    let active_identity = match &args.identity {
-        Some(identity) => identity.clone(),
-        None => detect_single_identity(&context.vault_path)?,
-    };
-    println!("  using identity: {}", active_identity);
+    let active_identity = identity_or_detect(args.identity.as_deref(), &context.vault_path)?;
+    plan.field("using identity", &active_identity);
 
-    let encrypted_path = operation.encrypted_path();
+    let encrypted_path = operation.input_path();
     let file_bytes = fs::read(encrypted_path)?;
     let parsed_envelope = parse_optional_envelope(&file_bytes, args.skip_checks)?;
     let parsed_envelope = match parsed_envelope {
         Some(parsed) => Some(parsed),
         None => {
-            operation.handle_missing_envelope(encrypted_path, args.skip_checks)?;
+            handle_missing_envelope(operation.mode, encrypted_path, args.skip_checks)?;
             None
         }
     };
@@ -278,126 +173,217 @@ fn handle_file_decrypt(context: &AppContext, args: FileDecryptArgs) -> Result<()
             "expected stubbed envelope for {:?}",
             parsed.prelude.sender.identity
         );
-    } else if matches!(operation, DecryptPlan::Direct { .. }) && result.envelope.is_stubbed() {
+    } else if matches!(operation.mode, OperationMode::Direct) && result.envelope.is_stubbed() {
         println!(
             "  warning: ciphertext envelope detected despite plain input ({}); continuing",
             encrypted_path.display()
         );
     }
 
-    atomic_write(operation.plaintext_path(), &result.plaintext)?;
-    operation.print_completion();
+    atomic_write(operation.output_path(), &result.plaintext)?;
+    match operation.mode {
+        OperationMode::Relative => println!(
+            "  wrote decrypted output atomically to {}",
+            operation.output_path().display()
+        ),
+        OperationMode::Direct => println!(
+            "  wrote decrypted output to {}",
+            operation.output_path().display()
+        ),
+    }
 
     Ok(())
 }
 
-enum EncryptPlan {
-    Relative {
-        plaintext: PathBuf,
-        ciphertext: PathBuf,
-    },
-    Direct {
-        plaintext: PathBuf,
-        ciphertext: PathBuf,
-    },
+fn resolve_encrypt_plan(
+    context: &AppContext,
+    args: &FileEncryptArgs,
+    plan: &PlanPrinter,
+) -> Result<Option<OperationPaths>> {
+    if let Some(relative) = &args.relative {
+        plan.field("mode", "datasite/shadow (relative)")
+            .field("vault", context.vault_path.display())
+            .field("data root", context.data_root.display())
+            .field("shadow root", context.shadow_root.display())
+            .field("relative path", relative.display())
+            .opt("recipient", args.recipient.as_deref())
+            .opt("sender identity", args.sender.as_deref());
+        print_encrypt_todos(plan);
+
+        if args.dry_run {
+            plan.info("dry-run complete: no ciphertext produced");
+            return Ok(None);
+        }
+
+        ensure_vault_layout(&context.vault_path)?;
+        let shadow_path = resolve_shadow_path(context, relative);
+        let data_path = resolve_data_path(context, relative);
+        plan.field("shadow source", shadow_path.display())
+            .field("datasite destination", data_path.display());
+
+        Ok(Some(OperationPaths {
+            mode: OperationMode::Relative,
+            input: shadow_path,
+            output: data_path,
+        }))
+    } else {
+        let src = args
+            .src
+            .as_ref()
+            .ok_or_else(|| "--src or --relative is required".to_string())?;
+        let dest = args
+            .dest
+            .as_ref()
+            .ok_or_else(|| "--dest or --relative is required".to_string())?;
+
+        plan.field("mode", "direct file")
+            .field("source", src.display())
+            .field("destination", dest.display())
+            .opt("sender identity", args.sender.as_deref())
+            .opt("recipient identity", args.recipient.as_deref());
+        print_encrypt_todos(plan);
+
+        if args.dry_run {
+            plan.info("dry-run complete: no ciphertext produced");
+            return Ok(None);
+        }
+
+        Ok(Some(OperationPaths {
+            mode: OperationMode::Direct,
+            input: src.to_path_buf(),
+            output: dest.to_path_buf(),
+        }))
+    }
 }
 
-impl EncryptPlan {
-    fn plaintext_path(&self) -> &Path {
-        match self {
-            EncryptPlan::Relative { plaintext, .. } | EncryptPlan::Direct { plaintext, .. } => {
-                plaintext
+fn resolve_decrypt_plan(
+    context: &AppContext,
+    args: &FileDecryptArgs,
+    plan: &PlanPrinter,
+) -> Result<Option<OperationPaths>> {
+    if let Some(relative) = &args.relative {
+        plan.field("mode", "datasite/shadow (relative)")
+            .field("vault", context.vault_path.display())
+            .field("data root", context.data_root.display())
+            .field("shadow root", context.shadow_root.display())
+            .field("relative path", relative.display());
+        match &args.identity {
+            Some(identity) => {
+                plan.field("preferred identity", identity);
+            }
+            None => {
+                plan.field("preferred identity", "auto-detect");
             }
         }
-    }
+        print_decrypt_todos(plan);
 
-    fn ciphertext_path(&self) -> &Path {
-        match self {
-            EncryptPlan::Relative { ciphertext, .. } | EncryptPlan::Direct { ciphertext, .. } => {
-                ciphertext
-            }
+        if args.dry_run {
+            plan.info("dry-run complete: no plaintext extracted");
+            return Ok(None);
         }
-    }
 
-    fn print_completion(&self) {
-        match self {
-            EncryptPlan::Relative { ciphertext, .. } => {
-                println!(
-                    "  wrote SYC envelope atomically to {}",
-                    ciphertext.display()
-                );
+        ensure_vault_layout(&context.vault_path)?;
+        let data_path = resolve_data_path(context, relative);
+        let shadow_path = resolve_shadow_path(context, relative);
+        plan.field("datasite source", data_path.display())
+            .field("shadow destination", shadow_path.display());
+
+        Ok(Some(OperationPaths {
+            mode: OperationMode::Relative,
+            input: data_path,
+            output: shadow_path,
+        }))
+    } else {
+        let src = args
+            .src
+            .as_ref()
+            .ok_or_else(|| "--src or --relative is required".to_string())?;
+        let dest = args
+            .dest
+            .as_ref()
+            .ok_or_else(|| "--dest or --relative is required".to_string())?;
+
+        plan.field("mode", "direct file")
+            .field("source", src.display())
+            .field("destination", dest.display());
+        match &args.identity {
+            Some(identity) => {
+                plan.field("preferred identity", identity);
             }
-            EncryptPlan::Direct { ciphertext, .. } => {
-                println!("  wrote SYC envelope to {}", ciphertext.display());
+            None => {
+                plan.field("preferred identity", "auto-detect");
             }
         }
+
+        if args.dry_run {
+            plan.info("dry-run complete: no plaintext extracted");
+            return Ok(None);
+        }
+
+        Ok(Some(OperationPaths {
+            mode: OperationMode::Direct,
+            input: src.to_path_buf(),
+            output: dest.to_path_buf(),
+        }))
     }
 }
 
-enum DecryptPlan {
-    Relative {
-        encrypted: PathBuf,
-        plaintext: PathBuf,
-    },
-    Direct {
-        encrypted: PathBuf,
-        plaintext: PathBuf,
-    },
+fn print_encrypt_todos(plan: &PlanPrinter) -> &PlanPrinter {
+    plan.info("TODO: fetch recipient bundle, establish PQXDH session, and seal file")
 }
 
-impl DecryptPlan {
-    fn encrypted_path(&self) -> &Path {
-        match self {
-            DecryptPlan::Relative { encrypted, .. } | DecryptPlan::Direct { encrypted, .. } => {
-                encrypted
-            }
-        }
-    }
+fn print_decrypt_todos(plan: &PlanPrinter) -> &PlanPrinter {
+    plan.info("TODO: verify sender authenticity and check key availability prior to decrypt")
+}
 
-    fn plaintext_path(&self) -> &Path {
-        match self {
-            DecryptPlan::Relative { plaintext, .. } | DecryptPlan::Direct { plaintext, .. } => {
-                plaintext
+fn handle_missing_envelope(mode: OperationMode, path: &Path, skip_checks: bool) -> Result<()> {
+    match mode {
+        OperationMode::Relative => {
+            if !skip_checks {
+                println!("  SYC envelope missing – treating payload as plaintext (relative mode)");
             }
+            Ok(())
         }
-    }
-
-    fn handle_missing_envelope(&self, path: &Path, skip_checks: bool) -> Result<()> {
-        match self {
-            DecryptPlan::Relative { .. } => {
-                if !skip_checks {
-                    println!(
-                        "  SYC envelope missing – treating payload as plaintext (relative mode)"
-                    );
-                }
+        OperationMode::Direct => {
+            if skip_checks {
                 Ok(())
-            }
-            DecryptPlan::Direct { .. } => {
-                if skip_checks {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "input {} is not an SYC envelope (magic missing)",
-                        path.display()
-                    )
-                    .into())
-                }
+            } else {
+                Err(format!(
+                    "input {} is not an SYC envelope (magic missing)",
+                    path.display()
+                )
+                .into())
             }
         }
     }
+}
 
-    fn print_completion(&self) {
-        match self {
-            DecryptPlan::Relative { plaintext, .. } => {
-                println!(
-                    "  wrote decrypted output atomically to {}",
-                    plaintext.display()
-                );
-            }
-            DecryptPlan::Direct { plaintext, .. } => {
-                println!("  wrote decrypted output to {}", plaintext.display());
-            }
-        }
+fn identity_or_detect(provided: Option<&str>, vault: &Path) -> Result<String> {
+    match provided {
+        Some(value) => Ok(value.to_owned()),
+        None => detect_single_identity(vault),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OperationMode {
+    Relative,
+    Direct,
+}
+
+struct OperationPaths {
+    mode: OperationMode,
+    input: PathBuf,
+    output: PathBuf,
+}
+
+impl OperationPaths {
+    fn input_path(&self) -> &Path {
+        &self.input
+    }
+
+    fn output_path(&self) -> &Path {
+        &self.output
     }
 }
 
