@@ -1,3 +1,4 @@
+mod bytes;
 mod file;
 mod key;
 
@@ -6,6 +7,7 @@ use std::path::PathBuf;
 
 use crate::app::{AppContext, Result};
 
+pub(crate) use bytes::BytesCommand;
 pub(crate) use file::FileCommand;
 pub(crate) use key::KeyCommand;
 
@@ -47,6 +49,10 @@ pub(crate) struct Cli {
 /// Top-level commands exposed by the CLI.
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
+    /// Stream plaintext bytes into/out of the datasite
+    #[command(subcommand)]
+    Bytes(BytesCommand),
+
     /// Manage identity material, bundles, and recovery artifacts
     #[command(subcommand)]
     Key(KeyCommand),
@@ -58,6 +64,7 @@ pub(crate) enum Command {
 
 pub(crate) fn handle_command(context: &AppContext, command: Command) -> Result<()> {
     match command {
+        Command::Bytes(cmd) => bytes::handle_bytes_command(context, cmd),
         Command::Key(cmd) => key::handle_key_command(context, cmd),
         Command::File(cmd) => file::handle_file_command(context, cmd),
     }
