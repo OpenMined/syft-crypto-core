@@ -84,6 +84,7 @@ lint:
 # Run clippy with automatic fixes
 lint-fix:
     cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
+    cargo fmt --all
 
 # Run all pre-commit checks (format, lint, test)
 pre-commit: format lint test

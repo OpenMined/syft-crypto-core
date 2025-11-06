@@ -458,9 +458,10 @@ fn handle_file_inspect(context: &AppContext, args: FileInspectArgs) -> Result<()
             parsed.prelude.cipher.ciphertext_len
         );
         if let Some(meta) = &parsed.prelude.public_meta
-            && let Some(filename_hint) = &meta.filename_hint {
-                println!("  filename hint: {}", filename_hint);
-            }
+            && let Some(filename_hint) = &meta.filename_hint
+        {
+            println!("  filename hint: {}", filename_hint);
+        }
         println!("  prelude size: {} bytes", parsed.prelude_bytes.len());
         println!("  signature size: {} bytes", parsed.signature.len());
         println!("  payload bytes: {}", parsed.ciphertext.len());
