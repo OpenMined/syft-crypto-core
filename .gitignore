@@ -12,3 +12,12 @@ experimentals/
 
 # docs
 docs/plans/
+
+# sandbox runtime artifacts
+sandbox/**/.syc/cache/
+sandbox/**/.syc/bundles/
+sandbox/**/.syc/config/datasite.json
+sandbox/**/*.key
+sandbox/**/public/crypto/did.json
+sandbox/**/shared/**/files/*
+cli/target/*
