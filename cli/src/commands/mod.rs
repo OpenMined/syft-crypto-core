@@ -3,10 +3,12 @@ mod file;
 mod key;
 
 use clap::{Parser, Subcommand};
-use std::fmt::Display;
-use std::path::PathBuf;
+use std::fmt::{self, Display};
+use std::path::{Path, PathBuf};
 
-use crate::app::{AppContext, Result, yes_no};
+use crate::app::{AppContext, Result, detect_single_identity, yes_no};
+use crate::envelope::ParsedEnvelope;
+use crate::protocol_interface::{has_syc_magic, parse_envelope, verify_stub_signature};
 
 pub(crate) use bytes::BytesCommand;
 pub(crate) use file::FileCommand;
@@ -71,16 +73,37 @@ pub(crate) fn handle_command(context: &AppContext, command: Command) -> Result<(
     }
 }
 
-pub(crate) struct PlanPrinter;
+pub(crate) struct PlanPrinter {
+    stderr: bool,
+}
 
 impl PlanPrinter {
     pub(crate) fn new(title: &str) -> Self {
-        println!("[plan] {}", title);
-        Self
+        Self::stdout(title)
+    }
+
+    pub(crate) fn stdout(title: &str) -> Self {
+        let printer = Self { stderr: false };
+        printer.emit(format_args!("[plan] {}", title));
+        printer
+    }
+
+    pub(crate) fn stderr(title: &str) -> Self {
+        let printer = Self { stderr: true };
+        printer.emit(format_args!("[plan] {}", title));
+        printer
+    }
+
+    fn emit(&self, args: fmt::Arguments<'_>) {
+        if self.stderr {
+            eprintln!("{}", args);
+        } else {
+            println!("{}", args);
+        }
     }
 
     pub(crate) fn field<T: Display>(&self, name: &str, value: T) -> &Self {
-        println!("  {}: {}", name, value);
+        self.emit(format_args!("  {}: {}", name, value));
         self
     }
 
@@ -96,8 +119,28 @@ impl PlanPrinter {
     }
 
     pub(crate) fn info(&self, message: &str) -> &Self {
-        println!("  {}", message);
+        self.emit(format_args!("  {}", message));
         self
+    }
+}
+
+pub(crate) fn resolve_identity(provided: Option<&str>, vault: &Path) -> Result<String> {
+    match provided {
+        Some(identity) => Ok(identity.to_owned()),
+        None => detect_single_identity(vault),
+    }
+}
+
+pub(crate) fn parse_optional_envelope(
+    bytes: &[u8],
+    skip_checks: bool,
+) -> Result<Option<ParsedEnvelope>> {
+    if has_syc_magic(bytes) {
+        let parsed = parse_envelope(bytes)?;
+        verify_stub_signature(&parsed, skip_checks)?;
+        Ok(Some(parsed))
+    } else {
+        Ok(None)
     }
 }
 

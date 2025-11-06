@@ -1,10 +1,7 @@
-use crate::app::{
-    AppContext, Result, atomic_write, detect_single_identity, resolve_data_path, yes_no,
-};
-use crate::envelope::ParsedEnvelope;
+use crate::app::{AppContext, Result, atomic_write, resolve_data_path};
+use crate::commands::{PlanPrinter, parse_optional_envelope, resolve_identity};
 use crate::protocol_interface::{
-    build_stub_envelope, decrypt_allow_plaintext, decrypt_bytes, encrypt_bytes, has_syc_magic,
-    parse_envelope, verify_stub_signature,
+    build_stub_envelope, decrypt_allow_plaintext, decrypt_bytes, encrypt_bytes,
 };
 use clap::{Args, Subcommand};
 use std::fs;
@@ -73,17 +70,11 @@ pub(crate) fn handle_bytes_command(context: &AppContext, command: BytesCommand) 
 }
 
 fn handle_bytes_write(context: &AppContext, args: BytesWriteArgs) -> Result<()> {
-    eprintln!("[plan] bytes write");
-    eprintln!("  relative path: {}", args.relative.display());
-    eprintln!(
-        "  mode: {}",
-        if !args.recipients.is_empty() && !args.plaintext {
-            "encrypted"
-        } else {
-            "plaintext"
-        }
-    );
-    eprintln!("  overwrite existing: {}", yes_no(args.overwrite));
+    let plan = PlanPrinter::stderr("bytes write");
+    let encrypted = !args.recipients.is_empty() && !args.plaintext;
+    plan.field("relative path", args.relative.display())
+        .field("mode", if encrypted { "encrypted" } else { "plaintext" })
+        .bool("overwrite existing", args.overwrite);
 
     let data_path = resolve_data_path(context, &args.relative);
     if data_path.exists() && !args.overwrite {
@@ -97,29 +88,32 @@ fn handle_bytes_write(context: &AppContext, args: BytesWriteArgs) -> Result<()> 
     let mut data = Vec::new();
     match &args.input {
         Some(path) => {
+            plan.field("input", path.display());
             data = fs::read(path)?;
         }
         None => {
-            eprintln!("  reading from stdin");
+            plan.info("reading from stdin");
             io::stdin().read_to_end(&mut data)?;
         }
     }
 
     if data.is_empty() {
-        eprintln!("  warning: zero-byte payload");
+        plan.info("warning: zero-byte payload");
     }
 
     let payload = if !args.recipients.is_empty() && !args.plaintext {
-        let sender_identity = detect_single_identity(&context.vault_path)?;
-        eprintln!("  sender identity: {}", sender_identity);
-        eprintln!(
-            "  recipients: {}",
-            args.recipients
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let sender_identity = resolve_identity(None, &context.vault_path)?;
+        plan.field("sender identity", &sender_identity);
+        if !args.recipients.is_empty() {
+            plan.field(
+                "recipients",
+                args.recipients
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
 
         let ciphertext = encrypt_bytes(
             &sender_identity,
@@ -134,27 +128,25 @@ fn handle_bytes_write(context: &AppContext, args: BytesWriteArgs) -> Result<()> 
         )?
     } else {
         if args.plaintext && !args.recipients.is_empty() {
-            eprintln!("  note: --plaintext provided – recipients will be ignored");
+            plan.info("note: --plaintext provided – recipients will be ignored");
         }
         data
     };
 
     atomic_write(&data_path, &payload)?;
-    eprintln!("  wrote {} bytes to {}", payload.len(), data_path.display());
+    plan.field("bytes written", payload.len())
+        .field("destination", data_path.display());
     Ok(())
 }
 
 fn handle_bytes_read(context: &AppContext, args: BytesReadArgs) -> Result<()> {
-    eprintln!("[plan] bytes read");
-    eprintln!("  relative path: {}", args.relative.display());
+    let plan = PlanPrinter::stderr("bytes read");
+    plan.field("relative path", args.relative.display());
     let data_path = resolve_data_path(context, &args.relative);
-    eprintln!("  datasite source: {}", data_path.display());
+    plan.field("datasite source", data_path.display());
 
-    let identity = match &args.identity {
-        Some(id) => id.clone(),
-        None => detect_single_identity(&context.vault_path)?,
-    };
-    eprintln!("  using identity: {}", identity);
+    let identity = resolve_identity(args.identity.as_deref(), &context.vault_path)?;
+    plan.field("using identity", &identity);
 
     let bytes = fs::read(&data_path)?;
     let (plaintext, envelope_used) = match parse_optional_envelope(&bytes, false)? {
@@ -174,34 +166,24 @@ fn handle_bytes_read(context: &AppContext, args: BytesReadArgs) -> Result<()> {
     };
 
     if envelope_used {
-        eprintln!("  detected SYC envelope – returning decrypted plaintext");
+        plan.info("detected SYC envelope – returning decrypted plaintext");
     } else {
-        eprintln!("  returning plaintext without envelope");
+        plan.info("returning plaintext without envelope");
     }
 
     match &args.output {
         Some(path) => {
             atomic_write(path, &plaintext)?;
-            eprintln!("  wrote output to {}", path.display());
+            plan.field("wrote output to", path.display());
         }
         None => {
+            plan.info("writing plaintext to stdout");
             io::stdout().write_all(&plaintext)?;
         }
     }
 
     Ok(())
 }
-
-fn parse_optional_envelope(bytes: &[u8], skip_checks: bool) -> Result<Option<ParsedEnvelope>> {
-    if has_syc_magic(bytes) {
-        let parsed = parse_envelope(bytes)?;
-        verify_stub_signature(&parsed, skip_checks)?;
-        Ok(Some(parsed))
-    } else {
-        Ok(None)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     include!(concat!(

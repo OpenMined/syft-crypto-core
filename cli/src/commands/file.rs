@@ -1,12 +1,11 @@
 use crate::app::{
-    AppContext, Result, atomic_write, detect_single_identity, ensure_vault_layout,
-    resolve_data_path, resolve_shadow_path, yes_no,
+    AppContext, Result, atomic_write, ensure_vault_layout, resolve_data_path, resolve_shadow_path,
+    yes_no,
 };
-use crate::commands::PlanPrinter;
-use crate::envelope::ParsedEnvelope;
+use crate::commands::{PlanPrinter, parse_optional_envelope, resolve_identity};
 use crate::protocol_interface::{
     CURRENT_VERSION, MAGIC, build_stub_envelope, decrypt_allow_plaintext, decrypt_bytes,
-    encrypt_bytes, has_syc_magic, inspect_ciphertext, parse_envelope, verify_stub_signature,
+    encrypt_bytes, inspect_ciphertext,
 };
 use clap::{Args, Subcommand};
 use std::fs;
@@ -114,7 +113,7 @@ fn handle_file_encrypt(context: &AppContext, args: FileEncryptArgs) -> Result<()
         return Ok(());
     };
 
-    let sender_identity = identity_or_detect(args.sender.as_deref(), &context.vault_path)?;
+    let sender_identity = resolve_identity(args.sender.as_deref(), &context.vault_path)?;
     plan.field("using sender identity", &sender_identity);
 
     let plaintext = fs::read(operation.input_path())?;
@@ -147,7 +146,7 @@ fn handle_file_decrypt(context: &AppContext, args: FileDecryptArgs) -> Result<()
         return Ok(());
     };
 
-    let active_identity = identity_or_detect(args.identity.as_deref(), &context.vault_path)?;
+    let active_identity = resolve_identity(args.identity.as_deref(), &context.vault_path)?;
     plan.field("using identity", &active_identity);
 
     let encrypted_path = operation.input_path();
@@ -358,13 +357,6 @@ fn handle_missing_envelope(mode: OperationMode, path: &Path, skip_checks: bool) 
     }
 }
 
-fn identity_or_detect(provided: Option<&str>, vault: &Path) -> Result<String> {
-    match provided {
-        Some(value) => Ok(value.to_owned()),
-        None => detect_single_identity(vault),
-    }
-}
-
 #[derive(Clone, Copy)]
 enum OperationMode {
     Relative,
@@ -384,16 +376,6 @@ impl OperationPaths {
 
     fn output_path(&self) -> &Path {
         &self.output
-    }
-}
-
-fn parse_optional_envelope(bytes: &[u8], skip_checks: bool) -> Result<Option<ParsedEnvelope>> {
-    if has_syc_magic(bytes) {
-        let parsed = parse_envelope(bytes)?;
-        verify_stub_signature(&parsed, skip_checks)?;
-        Ok(Some(parsed))
-    } else {
-        Ok(None)
     }
 }
 
