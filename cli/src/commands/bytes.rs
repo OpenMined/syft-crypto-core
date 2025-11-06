@@ -101,7 +101,7 @@ fn handle_bytes_write(context: &AppContext, args: BytesWriteArgs) -> Result<()> 
         plan.info("warning: zero-byte payload");
     }
 
-    let payload = if !args.recipients.is_empty() && !args.plaintext {
+    let payload = if encrypted {
         let sender_identity = resolve_identity(None, &context.vault_path)?;
         plan.field("sender identity", &sender_identity);
         if !args.recipients.is_empty() {
@@ -184,6 +184,7 @@ fn handle_bytes_read(context: &AppContext, args: BytesReadArgs) -> Result<()> {
 
     Ok(())
 }
+
 #[cfg(test)]
 mod tests {
     include!(concat!(
