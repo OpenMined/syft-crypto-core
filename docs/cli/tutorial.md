@@ -8,6 +8,8 @@ This tutorial mirrors the end-to-end flow exercised by the automated integration
 
 All shell commands are relative to the repository root (`syft-crypto-core`). Adjust paths if your checkout lives elsewhere.
 
+> Quick start: `just init-sandbox` will create the directory skeletons, write the datasite configs, and generate the Alice/Bob key material automatically. The steps below show the same process manually in case you need to customise the layout.
+
 ## 0. Compile / Run syc
 The `syc` command can be run direcly from the repo root by invoking it as a binary syc (this is a wrapper shell script).
 
@@ -31,6 +33,8 @@ mkdir -p sandbox/bob/unencrypted/bob@example.org/{public/crypto,shared/alice@exa
 mkdir -p sandbox/bob/datasites/bob@example.org/{public/crypto,shared/alice@example.org/files}
 ```
 
+Skip this manual setup if you already used `just init-sandbox`.
+
 ## 2. Configure Datasite Roots
 
 Create `config/datasite.json` for each identity so `syc` knows where the encrypted (datasites) and shadow (unencrypted) trees live. The paths mirror those in the integration test.
@@ -51,6 +55,8 @@ cat > sandbox/bob/.syc/config/datasite.json <<'JSON'
 JSON
 ```
 
+If you ran `just init-sandbox`, these files already exist.
+
 ## 3. Seed Alice’s Plaintext Message
 
 ```bash
@@ -63,6 +69,8 @@ TEXT
 ```
 
 ## 4. Generate Keys and Export Bundles
+
+You can skip this section if you already ran `just init-sandbox`; re-running the commands is safe thanks to `--overwrite`.
 
 ### Alice
 
@@ -151,4 +159,3 @@ The decrypted plaintext resides at `sandbox/bob/unencrypted/bob@example.org/shar
   `sandbox/bob/unencrypted/bob@example.org/shared/alice@example.org/files/message.txt`
 
 Repeat the same steps for other identities or add additional plaintext files under the corresponding `unencrypted/<identity>/shared/...` folders.***
-
