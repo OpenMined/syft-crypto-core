@@ -1,7 +1,7 @@
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const CONFIG_JSON: &str = r#"{
   "encrypted_root": "../datasites",
@@ -169,6 +169,61 @@ fn simulate_workflow_matches_shell_script() -> Result<(), Box<dyn std::error::Er
     fs::File::open(&plaintext_path)?.read_to_string(&mut plaintext)?;
     assert_eq!(plaintext, SAMPLE_MESSAGE);
 
+    // Use bytes helper to write encrypted content from Alice.
+    let bytes_message = b"Hello from bytes CLI";
+    let mut write_child = Command::new(env!("CARGO_BIN_EXE_syc"))
+        .args([
+            "--vault",
+            alice_vault.to_str().unwrap(),
+            "bytes",
+            "write",
+            "--relative",
+            "alice@example.org/shared/bob@example.org/files/bytes.txt",
+            "--recipient",
+            "bob@example.org",
+            "--overwrite",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .spawn()?;
+    write_child
+        .stdin
+        .as_mut()
+        .expect("bytes write stdin")
+        .write_all(bytes_message)?;
+    let status = write_child.wait()?;
+    assert!(status.success(), "bytes write failed");
+
+    // Deliver bytes ciphertext to Bob.
+    let alice_bytes_cipher =
+        alice.join("datasites/alice@example.org/shared/bob@example.org/files/bytes.txt");
+    let bob_bytes_cipher =
+        bob.join("datasites/bob@example.org/shared/alice@example.org/files/bytes.txt");
+    fs::create_dir_all(bob_bytes_cipher.parent().expect("bytes path has parent"))?;
+    fs::copy(&alice_bytes_cipher, &bob_bytes_cipher)?;
+
+    // Read via bytes helper (stdout).
+    let read_output = Command::new(env!("CARGO_BIN_EXE_syc"))
+        .args([
+            "--vault",
+            bob_vault.to_str().unwrap(),
+            "bytes",
+            "read",
+            "--relative",
+            "bob@example.org/shared/alice@example.org/files/bytes.txt",
+            "--identity",
+            "bob@example.org",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()?
+        .wait_with_output()?;
+    assert!(
+        read_output.status.success(),
+        "bytes read failed: {}",
+        String::from_utf8_lossy(&read_output.stderr)
+    );
+    assert_eq!(read_output.stdout, bytes_message);
+
     Ok(())
 }
 
@@ -205,7 +260,9 @@ fn files_to_clean(root: &Path) -> Vec<PathBuf> {
         "alice/unencrypted/alice@example.org/shared/bob@example.org/files/alice-message.txt",
         "bob/unencrypted/bob@example.org/shared/alice@example.org/files/decrypted-from-alice.txt",
         "alice/datasites/alice@example.org/shared/bob@example.org/files/message.txt",
+        "alice/datasites/alice@example.org/shared/bob@example.org/files/bytes.txt",
         "bob/datasites/bob@example.org/shared/alice@example.org/files/message.txt",
+        "bob/datasites/bob@example.org/shared/alice@example.org/files/bytes.txt",
         "alice/unencrypted/alice@example.org/shared/bob@example.org/files/message.txt",
         "bob/unencrypted/bob@example.org/shared/alice@example.org/files/message.txt",
     ]

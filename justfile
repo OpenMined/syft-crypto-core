@@ -116,3 +116,41 @@ tree:
 # Show dependency tree
 deps:
     cargo tree
+
+# Initialize sandbox directories, configs, and demo key material
+init-sandbox:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    for user in alice bob; do
+    identity="${user}@example.org"
+    if [ "${user}" = "alice" ]; then
+    other="bob"
+    else
+    other="alice"
+    fi
+    other_identity="${other}@example.org"
+    base="sandbox/${user}"
+
+    echo "Preparing sandbox for ${identity} (counterpart ${other_identity})"
+
+    mkdir -p \
+    "${base}/.syc/config" \
+    "${base}/.syc/keys" \
+    "${base}/.syc/bundles" \
+    "${base}/datasites/${identity}/public/crypto" \
+    "${base}/datasites/${identity}/shared/${other_identity}/files" \
+    "${base}/unencrypted/${identity}/public/crypto" \
+    "${base}/unencrypted/${identity}/shared/${other_identity}/files"
+
+    config_path="${base}/.syc/config/datasite.json"
+    printf '{\n  "encrypted_root": "../datasites",\n  "shadow_root": "../unencrypted"\n}\n' > "${config_path}"
+
+    echo "Generating key material for ${identity}"
+    ./syc \
+    --vault "${base}/.syc" \
+    key generate \
+    --identity "${identity}" \
+    --overwrite \
+    --bundle-out "${identity}/public/crypto/did.json"
+    done
