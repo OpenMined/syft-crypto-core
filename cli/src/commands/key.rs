@@ -1,12 +1,13 @@
 use crate::app::{
     AppContext, Result, bundle_path_for_identity, ensure_vault_layout, fallback_identity_from_path,
-    key_path_for_identity, read_identity_from_key, resolve_data_path, yes_no,
+    key_path_for_identity, read_identity_from_key, resolve_data_path,
 };
+use crate::commands::PlanPrinter;
 use crate::protocol_interface::{generate_identity_material, parse_public_bundle};
 use clap::{Args, Subcommand};
 use serde_json::to_string_pretty;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Identity and key-management subcommands.
 #[derive(Subcommand, Debug)]
@@ -130,22 +131,22 @@ pub(crate) struct KeyVerifyArgs {
 }
 
 fn handle_key_generate(context: &AppContext, args: KeyGenerateArgs) -> Result<()> {
-    println!("[plan] generate identity material");
-    println!("  vault: {}", context.vault_path.display());
-    println!("  identity: {}", args.identity);
-    println!("  overwrite existing: {}", yes_no(args.overwrite));
+    let plan = PlanPrinter::new("generate identity material");
+    plan.field("vault", context.vault_path.display())
+        .field("identity", &args.identity)
+        .bool("overwrite existing", args.overwrite);
     if let Some(bundle_out) = &args.bundle_out {
         let resolved = resolve_data_path(context, bundle_out);
-        println!("  export public bundle to: {}", resolved.display());
+        plan.field("export public bundle to", resolved.display());
     }
     if args.dry_run {
-        println!("  dry-run: no files will be written");
+        plan.info("dry-run: no files will be written");
     }
-    println!("  TODO: derive identity key, signed pre-key, and PQ pre-key using libsignal");
-    println!("  TODO: persist material in the configured vault and emit recovery bundle");
+    plan.info("TODO: derive identity key, signed pre-key, and PQ pre-key using libsignal")
+        .info("TODO: persist material in the configured vault and emit recovery bundle");
 
     if args.dry_run {
-        println!("  dry-run complete: no changes were made");
+        plan.info("dry-run complete: no changes were made");
         return Ok(());
     }
 
@@ -184,26 +185,29 @@ fn handle_key_generate(context: &AppContext, args: KeyGenerateArgs) -> Result<()
 }
 
 fn handle_key_import(context: &AppContext, args: KeyImportArgs) -> Result<()> {
-    println!("[plan] import bundle into vault");
-    println!("  vault: {}", context.vault_path.display());
+    let plan = PlanPrinter::new("import bundle into vault");
+    plan.field("vault", context.vault_path.display());
     let bundle_path = resolve_data_path(context, &args.bundle);
-    println!("  bundle: {}", bundle_path.display());
-    if let Some(identity) = &args.expected_identity {
-        println!("  expected identity (TOFU guard): {}", identity);
-    } else {
-        println!("  expected identity: auto-detect");
+    plan.field("bundle", bundle_path.display());
+    match &args.expected_identity {
+        Some(identity) => {
+            plan.field("expected identity (TOFU guard)", identity);
+        }
+        None => {
+            plan.field("expected identity", "auto-detect");
+        }
     }
-    println!("  verification only: {}", yes_no(args.verify_only));
-    println!("  force overwrite: {}", yes_no(args.force));
-    println!("  TODO: verify libsignal signatures once real bundles are available");
+    plan.bool("verification only", args.verify_only)
+        .bool("force overwrite", args.force)
+        .info("TODO: verify libsignal signatures once real bundles are available");
 
     let bundle_body = fs::read_to_string(&bundle_path)?;
     let bundle_info = parse_public_bundle(&bundle_body)?;
-    println!("  bundle identity: {}", bundle_info.identity);
-    println!("  bundle fingerprint: {}", bundle_info.fingerprint);
+    plan.field("bundle identity", &bundle_info.identity)
+        .field("bundle fingerprint", &bundle_info.fingerprint);
 
-    if let Some(expected) = &args.expected_identity
-        && expected != &bundle_info.identity
+    if let Some(expected) = args.expected_identity.as_deref()
+        && expected != bundle_info.identity
     {
         if args.force {
             println!(
@@ -220,7 +224,7 @@ fn handle_key_import(context: &AppContext, args: KeyImportArgs) -> Result<()> {
     }
 
     if args.verify_only {
-        println!("  verification complete – bundle not stored");
+        plan.info("verification complete – bundle not stored");
         return Ok(());
     }
 
@@ -271,33 +275,33 @@ fn handle_key_import(context: &AppContext, args: KeyImportArgs) -> Result<()> {
 }
 
 fn handle_key_recover(context: &AppContext, args: KeyRecoverArgs) -> Result<()> {
-    println!("[plan] recover identity from package");
-    println!("  vault: {}", context.vault_path.display());
-    println!("  package: {}", args.package.display());
+    let plan = PlanPrinter::new("recover identity from package");
+    plan.field("vault", context.vault_path.display())
+        .field("package", args.package.display());
     if let Some(identity) = &args.identity {
-        println!("  target identity label: {}", identity);
+        plan.field("target identity label", identity);
     } else {
-        println!("  target identity label: derive from package");
+        plan.field("target identity label", "derive from package");
     }
     if let Some(output) = &args.output {
-        println!("  staging output directory: {}", output.display());
+        plan.field("staging output directory", output.display());
     }
-    println!("  dry-run: {}", yes_no(args.dry_run));
-    println!("  TODO: decrypt recovery package and rehydrate key material");
-    println!("  TODO: verify signatures before committing recovered keys to vault");
+    plan.bool("dry-run", args.dry_run)
+        .info("TODO: decrypt recovery package and rehydrate key material")
+        .info("TODO: verify signatures before committing recovered keys to vault");
     if args.dry_run {
-        println!("  dry-run complete: no changes were made");
+        plan.info("dry-run complete: no changes were made");
     }
     Ok(())
 }
 
 fn handle_key_list(context: &AppContext, args: KeyListArgs) -> Result<()> {
-    println!("[plan] list known identities");
-    println!("  vault: {}", context.vault_path.display());
+    let plan = PlanPrinter::new("list known identities");
+    plan.field("vault", context.vault_path.display());
     if let Some(identity) = &args.identity {
-        println!("  filter: {}", identity);
+        plan.field("filter", identity);
     }
-    println!("  verbose: {}", yes_no(args.verbose));
+    plan.bool("verbose", args.verbose);
 
     ensure_vault_layout(&context.vault_path)?;
     let keys_dir = context.vault_path.join("keys");
@@ -335,25 +339,20 @@ fn handle_key_list(context: &AppContext, args: KeyListArgs) -> Result<()> {
 }
 
 fn handle_key_verify(context: &AppContext, args: KeyVerifyArgs) -> Result<()> {
-    println!("[plan] verify bundle");
-    println!(
-        "  vault (for context only): {}",
-        context.vault_path.display()
-    );
+    let plan = PlanPrinter::new("verify bundle");
+    plan.field("vault (for context only)", context.vault_path.display());
     let bundle_path = resolve_data_path(context, &args.bundle);
-    println!("  bundle: {}", bundle_path.display());
+    plan.field("bundle", bundle_path.display());
     if let Some(identity) = &args.expected_identity {
-        println!("  expected identity: {}", identity);
+        plan.field("expected identity", identity);
     }
-    println!("  verify only: {}", yes_no(args.verify_only));
-    println!("  emit json: {}", yes_no(args.json));
-    println!("  TODO: load bundle and validate both EC and PQ signatures");
-    println!("  TODO: surface fingerprints and metadata to caller");
+    plan.bool("verify only", args.verify_only)
+        .bool("emit json", args.json)
+        .info("TODO: load bundle and validate both EC and PQ signatures")
+        .info("TODO: surface fingerprints and metadata to caller");
 
-    let body = fs::read_to_string(&bundle_path)?;
-    if let Some(expected) = &args.expected_identity
-        && !body.contains(expected)
-    {
+    let body = read_bundle_body(&bundle_path)?;
+    if let Some(expected) = missing_expected_identity(&body, args.expected_identity.as_deref()) {
         println!(
             "  warning: expected identity '{}' not mentioned in bundle",
             expected
@@ -371,6 +370,14 @@ fn handle_key_verify(context: &AppContext, args: KeyVerifyArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn read_bundle_body(path: &Path) -> Result<String> {
+    Ok(fs::read_to_string(path)?)
+}
+
+fn missing_expected_identity<'a>(body: &str, expected: Option<&'a str>) -> Option<&'a str> {
+    expected.filter(|identity| !body.contains(*identity))
 }
 
 #[cfg(test)]
