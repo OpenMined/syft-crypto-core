@@ -63,7 +63,7 @@ fn run_with_args_propagates_command_errors() {
 
     let err = run_with_args(args).unwrap_err();
     let message = err.to_string();
-    assert!(message.contains("does not contain expected stub envelope"));
+    assert!(message.contains("is not an SYC envelope"));
 }
 
 #[test]

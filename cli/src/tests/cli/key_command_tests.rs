@@ -49,6 +49,19 @@ fn key_generate_writes_key_and_bundle() {
 }
 
 #[test]
+fn key_generate_creates_nested_bundle_directories() {
+    let (_tmp, context) = setup_context();
+    let args = KeyGenerateArgs {
+        identity: "dave".into(),
+        bundle_out: Some(PathBuf::from("nested/dirs/dave.json")),
+        overwrite: true,
+        dry_run: false,
+    };
+    handle_key_command(&context, KeyCommand::Generate(args)).unwrap();
+    assert!(context.data_root.join("nested/dirs/dave.json").exists());
+}
+
+#[test]
 fn key_generate_requires_overwrite_for_existing_material() {
     let (_tmp, context) = setup_context();
     handle_key_command(
@@ -143,6 +156,17 @@ fn key_list_outputs_identities_even_with_filter() {
 }
 
 #[test]
+fn key_list_reports_empty_vault() {
+    let (_tmp, context) = setup_context();
+    ensure_vault_layout(&context.vault_path).unwrap();
+    let args = KeyListArgs {
+        identity: None,
+        verbose: false,
+    };
+    handle_key_command(&context, KeyCommand::List(args)).unwrap();
+}
+
+#[test]
 fn key_verify_handles_json_mode() {
     let (_tmp, context) = setup_context();
     let bundle_path = context.data_root.join("bundle.json");
@@ -152,6 +176,20 @@ fn key_verify_handles_json_mode() {
         expected_identity: Some("alice".into()),
         verify_only: false,
         json: true,
+    };
+    handle_key_command(&context, KeyCommand::Verify(args)).unwrap();
+}
+
+#[test]
+fn key_verify_warns_when_expected_identity_missing() {
+    let (_tmp, context) = setup_context();
+    let bundle_path = context.data_root.join("bundle.json");
+    std::fs::write(&bundle_path, "placeholder").unwrap();
+    let args = KeyVerifyArgs {
+        bundle: PathBuf::from("bundle.json"),
+        expected_identity: Some("carol".into()),
+        verify_only: false,
+        json: false,
     };
     handle_key_command(&context, KeyCommand::Verify(args)).unwrap();
 }
