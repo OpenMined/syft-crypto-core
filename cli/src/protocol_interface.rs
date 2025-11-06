@@ -50,8 +50,11 @@ pub(crate) fn generate_identity_material(identity: &str) -> Result<GeneratedIden
     let mut key_file = serde_json::to_vec_pretty(&key_doc)?;
     key_file.push(b'\n');
 
+    let fingerprint = stub_identity_fingerprint(identity);
+
     let public_bundle = json!({
         "identity": identity,
+        "identity_fingerprint": fingerprint,
         "stub": true,
         "note": "Placeholder bundle – replace once libsignal export is wired",
         "keys": {
@@ -125,6 +128,37 @@ pub(crate) fn inspect_ciphertext(ciphertext: &[u8]) -> CipherInspection {
     }
 }
 
+/// Parsed representation of a cached public bundle.
+pub(crate) struct PublicBundleInfo {
+    pub(crate) identity: String,
+    pub(crate) fingerprint: String,
+    pub(crate) value: Value,
+}
+
+pub(crate) fn parse_public_bundle(body: &str) -> Result<PublicBundleInfo> {
+    let value: Value = serde_json::from_str(body)?;
+    let identity = value
+        .get("identity")
+        .and_then(Value::as_str)
+        .ok_or("bundle missing identity field")?
+        .to_string();
+    let fingerprint = value
+        .get("identity_fingerprint")
+        .and_then(Value::as_str)
+        .ok_or("bundle missing identity_fingerprint field")?
+        .to_string();
+
+    Ok(PublicBundleInfo {
+        identity,
+        fingerprint,
+        value,
+    })
+}
+
+pub(crate) fn stub_identity_fingerprint(identity: &str) -> String {
+    format!("stub-{}", identity.replace('@', "_at_"))
+}
+
 pub use crate::envelope::{
     CURRENT_VERSION, MAGIC, build_stub_envelope, has_syc_magic, parse_envelope,
     verify_stub_signature,
@@ -139,5 +173,17 @@ mod tests {
         let inspection = inspect_ciphertext(b"no envelope");
         assert_eq!(inspection.envelope, CipherEnvelope::Plaintext);
         assert_eq!(inspection.length, 11);
+    }
+
+    #[test]
+    fn parse_public_bundle_extracts_identity_and_fingerprint() {
+        let bundle = json!({
+            "identity": "alice@example.org",
+            "identity_fingerprint": "stub-alice_example.org"
+        });
+        let body = serde_json::to_string(&bundle).unwrap();
+        let parsed = parse_public_bundle(&body).unwrap();
+        assert_eq!(parsed.identity, "alice@example.org");
+        assert_eq!(parsed.fingerprint, "stub-alice_example.org");
     }
 }
