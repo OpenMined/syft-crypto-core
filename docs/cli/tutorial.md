@@ -94,6 +94,41 @@ syc \
   --bundle-out bob@example.org/public/crypto/did.json
 ```
 
+## 4.1 Cache Each Other’s Public Bundles (TOFU)
+
+Copy the public bundle into the recipient’s datasite tree and register it in the vault. This pins the counterparty fingerprint so `syc file inspect` can flag tampering later.
+
+```bash
+# Share Alice’s bundle with Bob
+mkdir -p sandbox/bob/datasites/alice@example.org/public/crypto
+cp \
+  sandbox/alice/datasites/alice@example.org/public/crypto/did.json \
+  sandbox/bob/datasites/alice@example.org/public/crypto/did.json
+
+syc \
+  --vault sandbox/bob/.syc \
+  key import \
+  --bundle alice@example.org/public/crypto/did.json \
+  --expected-identity alice@example.org
+```
+
+Now do the reciprocal copy/import so Alice trusts Bob’s bundle:
+
+```bash
+mkdir -p sandbox/alice/datasites/bob@example.org/public/crypto
+cp \
+  sandbox/bob/datasites/bob@example.org/public/crypto/did.json \
+  sandbox/alice/datasites/bob@example.org/public/crypto/did.json
+
+syc \
+  --vault sandbox/alice/.syc \
+  key import \
+  --bundle bob@example.org/public/crypto/did.json \
+  --expected-identity bob@example.org
+```
+
+Use `--force` if you intentionally overwrite a cached bundle (e.g., after rotating keys).
+
 ## 5. Encrypt Alice’s Message for Bob
 
 ```bash

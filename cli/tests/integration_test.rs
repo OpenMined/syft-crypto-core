@@ -1,3 +1,4 @@
+use serde_json::Value;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -76,6 +77,22 @@ fn simulate_workflow_matches_shell_script() -> Result<(), Box<dyn std::error::Er
         "--overwrite",
         "--bundle-out",
         "bob@example.org/public/crypto/did.json",
+    ])?;
+
+    // Bob imports Alice's public bundle into his vault (TOFU baseline).
+    let alice_bundle_src = alice.join("datasites/alice@example.org/public/crypto/did.json");
+    let bob_bundle_inbox = bob.join("datasites/alice@example.org/public/crypto/did.json");
+    fs::create_dir_all(bob_bundle_inbox.parent().unwrap())?;
+    fs::copy(&alice_bundle_src, &bob_bundle_inbox)?;
+    run_cli(&[
+        "--vault",
+        bob_vault.to_str().unwrap(),
+        "key",
+        "import",
+        "--bundle",
+        "alice@example.org/public/crypto/did.json",
+        "--expected-identity",
+        "alice@example.org",
     ])?;
 
     // Encrypt Alice's message relative to her datasite/shadow roots.
@@ -224,6 +241,75 @@ fn simulate_workflow_matches_shell_script() -> Result<(), Box<dyn std::error::Er
     );
     assert_eq!(read_output.stdout, bytes_message);
 
+    // Tamper with Alice's bundle and ensure TOFU enforcement kicks in.
+    let mut tampered_value: Value = serde_json::from_str(&fs::read_to_string(&bob_bundle_inbox)?)?;
+    tampered_value
+        .as_object_mut()
+        .expect("bundle to be a JSON object")
+        .insert(
+            "identity_fingerprint".into(),
+            Value::String("stub-alice_example.org-tampered".into()),
+        );
+    let tampered_path = bob.join("datasites/alice@example.org/public/crypto/did-tampered.json");
+    let mut tampered_body = serde_json::to_vec_pretty(&tampered_value)?;
+    tampered_body.push(b'\n');
+    fs::write(&tampered_path, &tampered_body)?;
+
+    let (_code, stdout, stderr) = run_cli_expect_failure(&[
+        "--vault",
+        bob_vault.to_str().unwrap(),
+        "key",
+        "import",
+        "--bundle",
+        "alice@example.org/public/crypto/did-tampered.json",
+        "--expected-identity",
+        "alice@example.org",
+    ]);
+    assert!(
+        stderr.contains("requires --force"),
+        "expected force warning, got stdout={stdout:?} stderr={stderr:?}"
+    );
+
+    run_cli(&[
+        "--vault",
+        bob_vault.to_str().unwrap(),
+        "key",
+        "import",
+        "--bundle",
+        "alice@example.org/public/crypto/did-tampered.json",
+        "--expected-identity",
+        "alice@example.org",
+        "--force",
+    ])?;
+
+    let inspect_tampered = Command::new(env!("CARGO_BIN_EXE_syc"))
+        .args([
+            "--vault",
+            bob_vault.to_str().unwrap(),
+            "file",
+            "inspect",
+            "--input",
+            "bob@example.org/shared/alice@example.org/files/message.txt",
+            "--identity",
+            "bob@example.org",
+            "--verbose",
+        ])
+        .output()?;
+    assert!(
+        inspect_tampered.status.success(),
+        "inspect after tamper failed: {}{}",
+        String::from_utf8_lossy(&inspect_tampered.stdout),
+        String::from_utf8_lossy(&inspect_tampered.stderr)
+    );
+    let tampered_stdout = String::from_utf8_lossy(&inspect_tampered.stdout);
+    assert!(
+        tampered_stdout.contains("warning: cached sender fingerprint"),
+        "expected fingerprint mismatch warning after tampered import: {tampered_stdout}"
+    );
+
+    assert_vault_list_contains(&alice_vault, &["alice@example.org"])?;
+    assert_vault_list_contains(&bob_vault, &["bob@example.org"])?;
+
     Ok(())
 }
 
@@ -263,6 +349,10 @@ fn files_to_clean(root: &Path) -> Vec<PathBuf> {
         "alice/datasites/alice@example.org/shared/bob@example.org/files/bytes.txt",
         "bob/datasites/bob@example.org/shared/alice@example.org/files/message.txt",
         "bob/datasites/bob@example.org/shared/alice@example.org/files/bytes.txt",
+        "bob/datasites/alice@example.org/public/crypto/did.json",
+        "bob/datasites/alice@example.org/public/crypto/did-tampered.json",
+        "bob/.syc/bundles/alice@example.org.json",
+        "alice/.syc/bundles/bob@example.org.json",
         "alice/unencrypted/alice@example.org/shared/bob@example.org/files/message.txt",
         "bob/unencrypted/bob@example.org/shared/alice@example.org/files/message.txt",
     ]
@@ -287,8 +377,60 @@ fn directories_to_ensure(root: &Path) -> Vec<PathBuf> {
         "bob/unencrypted/bob@example.org/shared/alice@example.org/files",
         "bob/datasites/bob@example.org/public/crypto",
         "bob/datasites/bob@example.org/shared/alice@example.org/files",
+        "bob/datasites/alice@example.org/public/crypto",
     ]
     .iter()
     .map(|rel| root.join(rel))
     .collect()
+}
+
+fn run_cli_expect_failure(args: &[&str]) -> (i32, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_syc"))
+        .args(args)
+        .output()
+        .expect("failed to spawn syc command");
+    assert!(
+        !output.status.success(),
+        "command `syc {}` unexpectedly succeeded",
+        args.join(" ")
+    );
+    let code = output.status.code().unwrap_or(-1);
+    (
+        code,
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+}
+
+fn assert_vault_list_contains(
+    vault: &Path,
+    expected_identities: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_syc"))
+        .args([
+            "--vault",
+            vault.to_str().unwrap(),
+            "key",
+            "list",
+            "--verbose",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "key list failed for {}: {}{}",
+        vault.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for identity in expected_identities {
+        assert!(
+            stdout.contains(identity),
+            "expected identity {} in key list output for {} but got:\n{}",
+            identity,
+            vault.display(),
+            stdout
+        );
+    }
+    Ok(())
 }
