@@ -1,8 +1,9 @@
 use crate::app::{
-    AppContext, Result, atomic_write, ensure_vault_layout, resolve_data_path, resolve_shadow_path,
-    yes_no,
+    AppContext, Result, atomic_write, bundle_path_for_identity, ensure_vault_layout,
+    resolve_data_path, resolve_shadow_path, yes_no,
 };
 use crate::commands::{PlanPrinter, parse_optional_envelope, resolve_identity};
+use crate::envelope::ParsedEnvelope;
 use crate::protocol_interface::{
     CURRENT_VERSION, MAGIC, build_stub_envelope, decrypt_allow_plaintext, decrypt_bytes,
     encrypt_bytes, inspect_ciphertext,
@@ -400,6 +401,7 @@ fn handle_file_inspect(context: &AppContext, args: FileInspectArgs) -> Result<()
             "  sender: {} (ik_fingerprint: {})",
             parsed.prelude.sender.identity, parsed.prelude.sender.ik_fingerprint
         );
+        report_sender_consistency(context, &parsed)?;
         println!("  recipients ({}):", parsed.prelude.recipients.len());
         for recipient in &parsed.prelude.recipients {
             let identity = recipient
@@ -444,6 +446,47 @@ fn handle_file_inspect(context: &AppContext, args: FileInspectArgs) -> Result<()
     }
 
     Ok(())
+}
+
+fn report_sender_consistency(context: &AppContext, parsed: &ParsedEnvelope) -> Result<()> {
+    let sender_identity = &parsed.prelude.sender.identity;
+    if sender_identity.is_empty() {
+        return Ok(());
+    }
+
+    match load_cached_bundle(context, sender_identity)? {
+        Some(info) => {
+            if info.fingerprint == parsed.prelude.sender.ik_fingerprint {
+                println!("  cached sender fingerprint matches ({})", info.fingerprint);
+            } else {
+                println!(
+                    "  warning: cached sender fingerprint {} differs from envelope {} (TOFU violation)",
+                    info.fingerprint, parsed.prelude.sender.ik_fingerprint
+                );
+            }
+        }
+        None => {
+            println!(
+                "  note: sender identity {} has no cached bundle – consider `syc key import`",
+                sender_identity
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn load_cached_bundle(
+    context: &AppContext,
+    identity: &str,
+) -> Result<Option<crate::protocol_interface::PublicBundleInfo>> {
+    let path = bundle_path_for_identity(&context.vault_path, identity);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let body = fs::read_to_string(path)?;
+    let info = crate::protocol_interface::parse_public_bundle(&body)?;
+    Ok(Some(info))
 }
 
 #[cfg(test)]

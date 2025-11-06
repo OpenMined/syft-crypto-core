@@ -103,6 +103,11 @@ pub(crate) fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
+pub(crate) fn bundle_path_for_identity(vault: &Path, identity: &str) -> PathBuf {
+    let slug = sanitize_identity(identity);
+    vault.join("bundles").join(format!("{slug}.json"))
+}
+
 pub(crate) fn key_path_for_identity(vault: &Path, identity: &str) -> PathBuf {
     let slug = sanitize_identity(identity);
     vault.join("keys").join(format!("{slug}.key"))
@@ -187,7 +192,7 @@ fn default_vault_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".syc"))
 }
 
-fn sanitize_identity(identity: &str) -> String {
+pub(crate) fn sanitize_identity(identity: &str) -> String {
     identity
         .chars()
         .map(|c| match c {

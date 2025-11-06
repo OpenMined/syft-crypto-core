@@ -1,5 +1,8 @@
 use super::*;
+use crate::app::bundle_path_for_identity;
 use crate::protocol_interface;
+use serde_json::Value;
+use std::fs;
 use std::path::PathBuf;
 use tempfile::tempdir;
 
@@ -8,9 +11,9 @@ fn setup_context() -> (tempfile::TempDir, AppContext) {
     let vault = base.path().join("vault");
     let data = base.path().join("data");
     let shadow = base.path().join("shadow");
-    std::fs::create_dir_all(&vault).unwrap();
-    std::fs::create_dir_all(&data).unwrap();
-    std::fs::create_dir_all(&shadow).unwrap();
+    fs::create_dir_all(&vault).unwrap();
+    fs::create_dir_all(&data).unwrap();
+    fs::create_dir_all(&shadow).unwrap();
     (
         base,
         AppContext {
@@ -91,37 +94,152 @@ fn key_generate_requires_overwrite_for_existing_material() {
 fn key_import_verify_only_does_not_write_bundle() {
     let (_tmp, context) = setup_context();
     let bundle_path = context.data_root.join("bundle.json");
-    std::fs::write(&bundle_path, "placeholder").unwrap();
+    let generated = protocol_interface::generate_identity_material("alice@example.org").unwrap();
+    let mut body = serde_json::to_vec_pretty(&generated.public_bundle).unwrap();
+    body.push(b'\n');
+    fs::write(&bundle_path, &body).unwrap();
     let args = KeyImportArgs {
         bundle: PathBuf::from("bundle.json"),
-        expected_identity: Some("alice".into()),
+        expected_identity: Some("alice@example.org".into()),
         verify_only: true,
         force: false,
     };
     handle_key_command(&context, KeyCommand::Import(args)).unwrap();
-    assert!(!context.vault_path.join("bundles/bundle.json").exists());
+    let cached = bundle_path_for_identity(&context.vault_path, "alice@example.org");
+    assert!(!cached.exists());
 }
 
 #[test]
 fn key_import_persists_bundle_when_not_verify_only() {
     let (_tmp, context) = setup_context();
     let bundle_path = context.data_root.join("bundle.json");
-    std::fs::write(&bundle_path, "placeholder").unwrap();
+    let generated = protocol_interface::generate_identity_material("bob@example.org").unwrap();
+    let mut body = serde_json::to_vec_pretty(&generated.public_bundle).unwrap();
+    body.push(b'\n');
+    fs::write(&bundle_path, &body).unwrap();
     let args = KeyImportArgs {
         bundle: PathBuf::from("bundle.json"),
         expected_identity: None,
         verify_only: false,
-        force: true,
+        force: false,
     };
     handle_key_command(&context, KeyCommand::Import(args)).unwrap();
-    assert!(context.vault_path.join("bundles/bundle.json").exists());
+    let cached = bundle_path_for_identity(&context.vault_path, "bob@example.org");
+    assert!(cached.exists());
+}
+
+#[test]
+fn key_import_identity_mismatch_requires_force() {
+    let (_tmp, context) = setup_context();
+    let bundle_path = context.data_root.join("bundle.json");
+    let generated = protocol_interface::generate_identity_material("carol@example.org").unwrap();
+    let mut body = serde_json::to_vec_pretty(&generated.public_bundle).unwrap();
+    body.push(b'\n');
+    fs::write(&bundle_path, &body).unwrap();
+
+    let err = handle_key_command(
+        &context,
+        KeyCommand::Import(KeyImportArgs {
+            bundle: PathBuf::from("bundle.json"),
+            expected_identity: Some("dave@example.org".into()),
+            verify_only: false,
+            force: false,
+        }),
+    )
+    .unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("does not match expected"));
+
+    handle_key_command(
+        &context,
+        KeyCommand::Import(KeyImportArgs {
+            bundle: PathBuf::from("bundle.json"),
+            expected_identity: Some("dave@example.org".into()),
+            verify_only: false,
+            force: true,
+        }),
+    )
+    .unwrap();
+
+    let cached = bundle_path_for_identity(&context.vault_path, "carol@example.org");
+    assert!(cached.exists());
+}
+
+#[test]
+fn key_import_requires_force_when_cached_fingerprint_differs() {
+    let (_tmp, context) = setup_context();
+    let baseline = protocol_interface::generate_identity_material("erin@example.org").unwrap();
+    let base_path = context.data_root.join("erin.json");
+    let mut baseline_body = serde_json::to_vec_pretty(&baseline.public_bundle).unwrap();
+    baseline_body.push(b'\n');
+    fs::write(&base_path, &baseline_body).unwrap();
+
+    handle_key_command(
+        &context,
+        KeyCommand::Import(KeyImportArgs {
+            bundle: PathBuf::from("erin.json"),
+            expected_identity: None,
+            verify_only: false,
+            force: false,
+        }),
+    )
+    .unwrap();
+
+    let mut tampered_value = baseline.public_bundle.clone();
+    tampered_value
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "identity_fingerprint".into(),
+            Value::String("stub-erin_example.org-tampered".into()),
+        );
+    let tampered_path = context.data_root.join("erin-tampered.json");
+    let mut tampered_body = serde_json::to_vec_pretty(&tampered_value).unwrap();
+    tampered_body.push(b'\n');
+    fs::write(&tampered_path, &tampered_body).unwrap();
+
+    let err = handle_key_command(
+        &context,
+        KeyCommand::Import(KeyImportArgs {
+            bundle: PathBuf::from("erin-tampered.json"),
+            expected_identity: Some("erin@example.org".into()),
+            verify_only: false,
+            force: false,
+        }),
+    )
+    .unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("requires --force"));
+
+    handle_key_command(
+        &context,
+        KeyCommand::Import(KeyImportArgs {
+            bundle: PathBuf::from("erin-tampered.json"),
+            expected_identity: Some("erin@example.org".into()),
+            verify_only: false,
+            force: true,
+        }),
+    )
+    .unwrap();
+
+    let cached_path = bundle_path_for_identity(&context.vault_path, "erin@example.org");
+    let cached_body = fs::read_to_string(cached_path).unwrap();
+    let cached_json: Value = serde_json::from_str(&cached_body).unwrap();
+    assert_eq!(
+        cached_json
+            .get("identity_fingerprint")
+            .and_then(Value::as_str),
+        Some("stub-erin_example.org-tampered")
+    );
 }
 
 #[test]
 fn key_recover_is_non_destructive_noop() {
     let (_tmp, context) = setup_context();
     let package = context.data_root.join("package.zip");
-    std::fs::write(&package, b"archive").unwrap();
+    fs::write(&package, b"archive").unwrap();
     let args = KeyRecoverArgs {
         package,
         identity: Some("alice".into()),
@@ -139,8 +257,8 @@ fn key_list_outputs_identities_even_with_filter() {
     let bob = key_path_for_identity(&context.vault_path, "bob");
     let alice_material = protocol_interface::generate_identity_material("alice").unwrap();
     let bob_material = protocol_interface::generate_identity_material("bob").unwrap();
-    std::fs::write(&alice, alice_material.key_file).unwrap();
-    std::fs::write(&bob, bob_material.key_file).unwrap();
+    fs::write(&alice, alice_material.key_file).unwrap();
+    fs::write(&bob, bob_material.key_file).unwrap();
 
     let list_all = KeyListArgs {
         identity: None,
@@ -170,7 +288,7 @@ fn key_list_reports_empty_vault() {
 fn key_verify_handles_json_mode() {
     let (_tmp, context) = setup_context();
     let bundle_path = context.data_root.join("bundle.json");
-    std::fs::write(&bundle_path, "identity: alice").unwrap();
+    fs::write(&bundle_path, "identity: alice").unwrap();
     let args = KeyVerifyArgs {
         bundle: PathBuf::from("bundle.json"),
         expected_identity: Some("alice".into()),
@@ -184,7 +302,7 @@ fn key_verify_handles_json_mode() {
 fn key_verify_warns_when_expected_identity_missing() {
     let (_tmp, context) = setup_context();
     let bundle_path = context.data_root.join("bundle.json");
-    std::fs::write(&bundle_path, "placeholder").unwrap();
+    fs::write(&bundle_path, "placeholder").unwrap();
     let args = KeyVerifyArgs {
         bundle: PathBuf::from("bundle.json"),
         expected_identity: Some("carol".into()),

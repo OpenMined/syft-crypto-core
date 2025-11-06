@@ -110,3 +110,89 @@ fn bytes_write_encrypted_and_read_back() {
     let plaintext = fs::read(output_path).unwrap();
     assert_eq!(plaintext, payload);
 }
+
+#[test]
+fn bytes_write_errors_when_path_exists_without_overwrite() {
+    let (_tmp, context) = setup_context();
+    let relative = PathBuf::from("docs/existing.txt");
+    let target = context.data_root.join(&relative);
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(&target, b"original").unwrap();
+    let input_path = context.shadow_root.join("input.txt");
+    fs::write(&input_path, b"new data").unwrap();
+
+    let err = handle_bytes_command(
+        &context,
+        BytesCommand::Write(BytesWriteArgs {
+            relative: relative.clone(),
+            recipients: vec![],
+            input: Some(input_path),
+            plaintext: true,
+            overwrite: false,
+            hint: None,
+        }),
+    )
+    .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("already exists (use --overwrite to replace)"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn bytes_write_plaintext_flag_ignores_recipients() {
+    let (_tmp, context) = setup_context();
+    write_identity(&context, "alice@example.org");
+
+    let input_path = context.shadow_root.join("note.txt");
+    fs::write(&input_path, b"plaintext").unwrap();
+
+    handle_bytes_command(
+        &context,
+        BytesCommand::Write(BytesWriteArgs {
+            relative: PathBuf::from("docs/plain.txt"),
+            recipients: vec!["bob@example.org".into()],
+            input: Some(input_path),
+            plaintext: true,
+            overwrite: false,
+            hint: None,
+        }),
+    )
+    .unwrap();
+
+    let written = fs::read(context.data_root.join("docs/plain.txt")).unwrap();
+    assert_eq!(written, b"plaintext");
+    assert!(
+        !crate::protocol_interface::has_syc_magic(&written),
+        "plaintext writes should not produce envelopes"
+    );
+}
+
+#[test]
+fn bytes_read_requires_envelope_when_flag_set() {
+    let (_tmp, context) = setup_context();
+    write_identity(&context, "alice@example.org");
+
+    let relative = PathBuf::from("docs/plain.txt");
+    let target = context.data_root.join(&relative);
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(&target, b"plaintext").unwrap();
+
+    let err = handle_bytes_command(
+        &context,
+        BytesCommand::Read(BytesReadArgs {
+            relative,
+            identity: Some("alice@example.org".into()),
+            require_envelope: true,
+            output: None,
+        }),
+    )
+    .unwrap_err();
+
+    assert!(
+        err.to_string().contains("does not contain an SYC envelope"),
+        "unexpected error: {err}"
+    );
+}

@@ -1,9 +1,9 @@
 use crate::app::{
-    AppContext, Result, ensure_vault_layout, fallback_identity_from_path, key_path_for_identity,
-    read_identity_from_key, resolve_data_path,
+    AppContext, Result, bundle_path_for_identity, ensure_vault_layout, fallback_identity_from_path,
+    key_path_for_identity, read_identity_from_key, resolve_data_path,
 };
 use crate::commands::PlanPrinter;
-use crate::protocol_interface::generate_identity_material;
+use crate::protocol_interface::{generate_identity_material, parse_public_bundle};
 use clap::{Args, Subcommand};
 use serde_json::to_string_pretty;
 use std::fs;
@@ -199,40 +199,78 @@ fn handle_key_import(context: &AppContext, args: KeyImportArgs) -> Result<()> {
     }
     plan.bool("verification only", args.verify_only)
         .bool("force overwrite", args.force)
-        .info("TODO: parse bundle, verify signatures via PublicKeyBundle::verify_signatures")
-        .info("TODO: compare claimed identity with vault contents and warn on mismatch");
-    if !args.force {
-        plan.info("TODO: block import when TOFU identity differs unless --force is supplied");
-    }
+        .info("TODO: verify libsignal signatures once real bundles are available");
 
-    let bundle_body = read_bundle_body(&bundle_path)?;
-    if let Some(expected) =
-        missing_expected_identity(&bundle_body, args.expected_identity.as_deref())
+    let bundle_body = fs::read_to_string(&bundle_path)?;
+    let bundle_info = parse_public_bundle(&bundle_body)?;
+    plan.field("bundle identity", &bundle_info.identity)
+        .field("bundle fingerprint", &bundle_info.fingerprint);
+
+    if let Some(expected) = args.expected_identity.as_deref()
+        && expected != bundle_info.identity
     {
-        println!(
-            "  warning: expected identity '{}' not found in bundle contents",
-            expected
-        );
+        if args.force {
+            println!(
+                "  warning: bundle identity '{}' differs from expected '{}'; proceeding due to --force",
+                bundle_info.identity, expected
+            );
+        } else {
+            return Err(format!(
+                "bundle identity '{}' does not match expected '{}' (use --force to override)",
+                bundle_info.identity, expected
+            )
+            .into());
+        }
     }
 
     if args.verify_only {
-        plan.info("note: verification only – no changes were written");
+        plan.info("verification complete – bundle not stored");
         return Ok(());
     }
 
     ensure_vault_layout(&context.vault_path)?;
-    let bundles_dir = context.vault_path.join("bundles");
-    fs::create_dir_all(&bundles_dir)?;
-    let dest = bundles_dir.join(
-        bundle_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
-    );
-    fs::write(&dest, bundle_body)?;
-    println!("  stored bundle copy at {}", dest.display());
+    let dest = bundle_path_for_identity(&context.vault_path, &bundle_info.identity);
+    if dest.exists() {
+        let existing_body = fs::read_to_string(&dest)?;
+        let existing_info = parse_public_bundle(&existing_body)?;
+        if existing_info.fingerprint == bundle_info.fingerprint {
+            println!(
+                "  cached bundle already matches fingerprint {} – leaving file untouched",
+                bundle_info.fingerprint
+            );
+            if args.force {
+                println!("  note: --force ignored because bundle is unchanged");
+            }
+            return Ok(());
+        }
 
+        if !args.force {
+            return Err(format!(
+                "bundle for {} already cached with fingerprint {} – new fingerprint {} requires --force",
+                bundle_info.identity, existing_info.fingerprint, bundle_info.fingerprint
+            )
+            .into());
+        }
+
+        println!(
+            "  warning: overwriting cached bundle for {} ({} -> {})",
+            bundle_info.identity, existing_info.fingerprint, bundle_info.fingerprint
+        );
+    } else {
+        println!(
+            "  no cached bundle for {}; will store at {}",
+            bundle_info.identity,
+            dest.display()
+        );
+    }
+
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut formatted = serde_json::to_vec_pretty(&bundle_info.value)?;
+    formatted.push(b'\n');
+    fs::write(&dest, formatted)?;
+    println!("  stored bundle copy at {}", dest.display());
     Ok(())
 }
 
