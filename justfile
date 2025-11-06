@@ -5,6 +5,15 @@ _default:
     @just --list
 
 # Build entire workspace
+# Install recommended development tools
+install-dev-tools:
+    -cargo install cargo-watch
+    -cargo install cargo-audit
+    -cargo install cargo-outdated
+    -cargo install cargo-machete
+    -cargo install cargo-tarpaulin
+
+# Build the project in debug mode
 build:
     cargo build --workspace
 
@@ -28,9 +37,37 @@ test:
 test-protocol:
     cargo test -p syft-crypto-protocol
 
+# Run CLI tests only
+test-cli:
+    cargo test -p syft-crypto-cli
+
+# Run CLI integration tests
+test-integration-cli *ARGS:
+    cargo build -p syft-crypto-cli
+    cargo test -p syft-crypto-cli --test integration_test {{ARGS}}
+
 # Run with verbose output
 test-verbose:
     cargo test --workspace -- --nocapture
+
+# Run full CLI check (lint-fix, test-cli, test-integration-cli)
+check-cli:
+    just lint-fix
+    just test-cli
+    just test-integration-cli
+
+# Run coverage on CLI workspace
+coverage-cli *ARGS:
+    ./coverage.sh --cli {{ARGS}}
+
+# Run coverage on protocol workspace
+coverage-protocol *ARGS:
+    ./coverage.sh --protocol {{ARGS}}
+
+# Run coverage on both workspaces
+coverage-all *ARGS:
+    ./coverage.sh --cli {{ARGS}}
+    ./coverage.sh --protocol {{ARGS}}
 
 # Format code
 format:

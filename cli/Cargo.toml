@@ -24,5 +24,8 @@ rand.workspace = true
 rand_chacha.workspace = true
 
 [[bin]]
-name = "syft-crypto"
+name = "syc"
 path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3"
