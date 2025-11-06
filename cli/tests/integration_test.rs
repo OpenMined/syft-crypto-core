@@ -14,7 +14,7 @@ const SAMPLE_MESSAGE: &str = r#"Hello Bob,
 This is a placeholder message from Alice. Once the PQ encryption
 plumbing is wired up, this text will be replaced with sealed bytes."#;
 
-const STUB_ENVELOPE: &[u8] = b"SYC-STUB-CIPHERTEXT\n";
+const SYC_MAGIC: &[u8; 4] = b"SYC1";
 
 #[test]
 fn simulate_workflow_matches_shell_script() -> Result<(), Box<dyn std::error::Error>> {
@@ -106,17 +106,30 @@ fn simulate_workflow_matches_shell_script() -> Result<(), Box<dyn std::error::Er
     fs::copy(&alice_cipher, &bob_cipher)?;
 
     // Inspect ciphertext as Bob.
-    run_cli(&[
-        "--vault",
-        bob_vault.to_str().unwrap(),
-        "file",
-        "inspect",
-        "--input",
-        "bob@example.org/shared/alice@example.org/files/message.txt",
-        "--identity",
-        "bob@example.org",
-        "--verbose",
-    ])?;
+    let inspect_output = Command::new(env!("CARGO_BIN_EXE_syc"))
+        .args([
+            "--vault",
+            bob_vault.to_str().unwrap(),
+            "file",
+            "inspect",
+            "--input",
+            "bob@example.org/shared/alice@example.org/files/message.txt",
+            "--identity",
+            "bob@example.org",
+            "--verbose",
+        ])
+        .output()?;
+    assert!(
+        inspect_output.status.success(),
+        "inspect failed: {}{}",
+        String::from_utf8_lossy(&inspect_output.stdout),
+        String::from_utf8_lossy(&inspect_output.stderr)
+    );
+    let inspect_stdout = String::from_utf8_lossy(&inspect_output.stdout);
+    assert!(
+        inspect_stdout.contains("envelope magic"),
+        "inspect output should mention envelope magic"
+    );
 
     // Decrypt into Bob's shadow tree.
     run_cli(&[
@@ -146,8 +159,8 @@ fn simulate_workflow_matches_shell_script() -> Result<(), Box<dyn std::error::Er
 
     let ciphertext = fs::read(&bob_cipher)?;
     assert!(
-        ciphertext.starts_with(STUB_ENVELOPE),
-        "ciphertext should start with stub envelope"
+        ciphertext.starts_with(SYC_MAGIC),
+        "ciphertext should start with SYC envelope magic"
     );
 
     let plaintext_path =

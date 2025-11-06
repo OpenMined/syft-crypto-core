@@ -2,12 +2,14 @@ use crate::app::{
     AppContext, Result, atomic_write, detect_single_identity, ensure_vault_layout,
     resolve_data_path, resolve_shadow_path, yes_no,
 };
+use crate::envelope::ParsedEnvelope;
 use crate::protocol_interface::{
-    decrypt_allow_plaintext, decrypt_bytes, encrypt_bytes, inspect_ciphertext,
+    CURRENT_VERSION, MAGIC, build_stub_envelope, decrypt_allow_plaintext, decrypt_bytes,
+    encrypt_bytes, has_syc_magic, inspect_ciphertext, parse_envelope, verify_stub_signature,
 };
 use clap::{Args, Subcommand};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// File and path subcommands.
 #[derive(Subcommand, Debug)]
@@ -106,7 +108,7 @@ fn handle_file_encrypt(context: &AppContext, args: FileEncryptArgs) -> Result<()
     println!("[plan] file encrypt");
     println!("  dry-run: {}", yes_no(args.dry_run));
 
-    if let Some(relative) = &args.relative {
+    let operation = if let Some(relative) = &args.relative {
         println!("  mode: datasite/shadow (relative)");
         println!("  vault: {}", context.vault_path.display());
         println!("  data root: {}", context.data_root.display());
@@ -131,20 +133,10 @@ fn handle_file_encrypt(context: &AppContext, args: FileEncryptArgs) -> Result<()
         println!("  shadow source: {}", shadow_path.display());
         println!("  datasite destination: {}", data_path.display());
 
-        let sender_identity = match &args.sender {
-            Some(identity) => identity.clone(),
-            None => detect_single_identity(&context.vault_path)?,
-        };
-        println!("  using sender identity: {}", sender_identity);
-
-        let plaintext = fs::read(&shadow_path)?;
-        let ciphertext = encrypt_bytes(&sender_identity, args.recipient.as_deref(), &plaintext)?;
-
-        atomic_write(&data_path, &ciphertext)?;
-        println!(
-            "  wrote placeholder ciphertext atomically to {}",
-            data_path.display()
-        );
+        EncryptPlan::Relative {
+            plaintext: shadow_path,
+            ciphertext: data_path,
+        }
     } else {
         let src = args
             .src
@@ -155,15 +147,12 @@ fn handle_file_encrypt(context: &AppContext, args: FileEncryptArgs) -> Result<()
             .as_ref()
             .ok_or_else(|| "--dest or --relative is required".to_string())?;
 
-        let sender_identity = match &args.sender {
-            Some(identity) => identity.clone(),
-            None => detect_single_identity(&context.vault_path)?,
-        };
-
         println!("  mode: direct file");
         println!("  source: {}", src.display());
         println!("  destination: {}", dest.display());
-        println!("  sender identity: {}", sender_identity);
+        if let Some(sender) = &args.sender {
+            println!("  sender identity: {}", sender);
+        }
         if let Some(recipient) = &args.recipient {
             println!("  recipient identity: {}", recipient);
         }
@@ -174,11 +163,25 @@ fn handle_file_encrypt(context: &AppContext, args: FileEncryptArgs) -> Result<()
             return Ok(());
         }
 
-        let plaintext = fs::read(src)?;
-        let ciphertext = encrypt_bytes(&sender_identity, args.recipient.as_deref(), &plaintext)?;
-        atomic_write(dest, &ciphertext)?;
-        println!("  wrote placeholder ciphertext to {}", dest.display());
-    }
+        EncryptPlan::Direct {
+            plaintext: src.to_path_buf(),
+            ciphertext: dest.to_path_buf(),
+        }
+    };
+
+    let sender_identity = match &args.sender {
+        Some(identity) => identity.clone(),
+        None => detect_single_identity(&context.vault_path)?,
+    };
+    println!("  using sender identity: {}", sender_identity);
+
+    let plaintext = fs::read(operation.plaintext_path())?;
+    let ciphertext = encrypt_bytes(&sender_identity, args.recipient.as_deref(), &plaintext)?;
+    let recipients: Vec<String> = args.recipient.iter().cloned().collect();
+    let envelope = build_stub_envelope(&sender_identity, &recipients, &ciphertext, None)?;
+
+    atomic_write(operation.ciphertext_path(), &envelope)?;
+    operation.print_completion();
 
     Ok(())
 }
@@ -188,7 +191,7 @@ fn handle_file_decrypt(context: &AppContext, args: FileDecryptArgs) -> Result<()
     println!("  dry-run: {}", yes_no(args.dry_run));
     println!("  skip schema checks: {}", yes_no(args.skip_checks));
 
-    if let Some(relative) = &args.relative {
+    let operation = if let Some(relative) = &args.relative {
         println!("  mode: datasite/shadow (relative)");
         println!("  vault: {}", context.vault_path.display());
         println!("  data root: {}", context.data_root.display());
@@ -212,24 +215,10 @@ fn handle_file_decrypt(context: &AppContext, args: FileDecryptArgs) -> Result<()
         println!("  datasite source: {}", data_path.display());
         println!("  shadow destination: {}", shadow_path.display());
 
-        let active_identity = match &args.identity {
-            Some(identity) => identity.clone(),
-            None => detect_single_identity(&context.vault_path)?,
-        };
-        println!("  using identity: {}", active_identity);
-
-        let ciphertext = fs::read(&data_path)?;
-        let result = decrypt_allow_plaintext(&active_identity, &ciphertext)?;
-        if !args.skip_checks && !result.envelope.is_stubbed() {
-            println!("  stub envelope missing – treating payload as plaintext (relative mode)");
+        DecryptPlan::Relative {
+            encrypted: data_path,
+            plaintext: shadow_path,
         }
-        let plaintext = result.plaintext;
-
-        atomic_write(&shadow_path, &plaintext)?;
-        println!(
-            "  wrote decrypted placeholder output atomically to {}",
-            shadow_path.display()
-        );
     } else {
         let src = args
             .src
@@ -240,33 +229,186 @@ fn handle_file_decrypt(context: &AppContext, args: FileDecryptArgs) -> Result<()
             .as_ref()
             .ok_or_else(|| "--dest or --relative is required".to_string())?;
 
-        let active_identity = match &args.identity {
-            Some(identity) => identity.clone(),
-            None => detect_single_identity(&context.vault_path)?,
-        };
-
         println!("  mode: direct file");
         println!("  source: {}", src.display());
         println!("  destination: {}", dest.display());
-        println!("  preferred identity: {}", active_identity);
+        if let Some(identity) = &args.identity {
+            println!("  preferred identity: {}", identity);
+        } else {
+            println!("  preferred identity: auto-detect");
+        }
 
         if args.dry_run {
             println!("  dry-run complete: no plaintext extracted");
             return Ok(());
         }
 
-        let ciphertext = fs::read(src)?;
-        let result = decrypt_bytes(&active_identity, &ciphertext, args.skip_checks)?;
-        if !result.envelope.is_stubbed() {
-            println!("  stub envelope missing – returning plaintext as-is");
+        DecryptPlan::Direct {
+            encrypted: src.to_path_buf(),
+            plaintext: dest.to_path_buf(),
         }
-        let plaintext = result.plaintext;
+    };
 
-        atomic_write(dest, &plaintext)?;
-        println!("  wrote decrypted placeholder output to {}", dest.display());
+    let active_identity = match &args.identity {
+        Some(identity) => identity.clone(),
+        None => detect_single_identity(&context.vault_path)?,
+    };
+    println!("  using identity: {}", active_identity);
+
+    let encrypted_path = operation.encrypted_path();
+    let file_bytes = fs::read(encrypted_path)?;
+    let parsed_envelope = parse_optional_envelope(&file_bytes, args.skip_checks)?;
+    let parsed_envelope = match parsed_envelope {
+        Some(parsed) => Some(parsed),
+        None => {
+            operation.handle_missing_envelope(encrypted_path, args.skip_checks)?;
+            None
+        }
+    };
+
+    let result = if let Some(parsed) = parsed_envelope.as_ref() {
+        decrypt_bytes(&active_identity, &parsed.ciphertext, args.skip_checks)?
+    } else {
+        decrypt_allow_plaintext(&active_identity, &file_bytes)?
+    };
+
+    if let Some(parsed) = parsed_envelope.as_ref() {
+        debug_assert!(
+            result.envelope.is_stubbed(),
+            "expected stubbed envelope for {:?}",
+            parsed.prelude.sender.identity
+        );
+    } else if matches!(operation, DecryptPlan::Direct { .. }) && result.envelope.is_stubbed() {
+        println!(
+            "  warning: ciphertext envelope detected despite plain input ({}); continuing",
+            encrypted_path.display()
+        );
     }
 
+    atomic_write(operation.plaintext_path(), &result.plaintext)?;
+    operation.print_completion();
+
     Ok(())
+}
+
+enum EncryptPlan {
+    Relative {
+        plaintext: PathBuf,
+        ciphertext: PathBuf,
+    },
+    Direct {
+        plaintext: PathBuf,
+        ciphertext: PathBuf,
+    },
+}
+
+impl EncryptPlan {
+    fn plaintext_path(&self) -> &Path {
+        match self {
+            EncryptPlan::Relative { plaintext, .. } | EncryptPlan::Direct { plaintext, .. } => {
+                plaintext
+            }
+        }
+    }
+
+    fn ciphertext_path(&self) -> &Path {
+        match self {
+            EncryptPlan::Relative { ciphertext, .. } | EncryptPlan::Direct { ciphertext, .. } => {
+                ciphertext
+            }
+        }
+    }
+
+    fn print_completion(&self) {
+        match self {
+            EncryptPlan::Relative { ciphertext, .. } => {
+                println!(
+                    "  wrote SYC envelope atomically to {}",
+                    ciphertext.display()
+                );
+            }
+            EncryptPlan::Direct { ciphertext, .. } => {
+                println!("  wrote SYC envelope to {}", ciphertext.display());
+            }
+        }
+    }
+}
+
+enum DecryptPlan {
+    Relative {
+        encrypted: PathBuf,
+        plaintext: PathBuf,
+    },
+    Direct {
+        encrypted: PathBuf,
+        plaintext: PathBuf,
+    },
+}
+
+impl DecryptPlan {
+    fn encrypted_path(&self) -> &Path {
+        match self {
+            DecryptPlan::Relative { encrypted, .. } | DecryptPlan::Direct { encrypted, .. } => {
+                encrypted
+            }
+        }
+    }
+
+    fn plaintext_path(&self) -> &Path {
+        match self {
+            DecryptPlan::Relative { plaintext, .. } | DecryptPlan::Direct { plaintext, .. } => {
+                plaintext
+            }
+        }
+    }
+
+    fn handle_missing_envelope(&self, path: &Path, skip_checks: bool) -> Result<()> {
+        match self {
+            DecryptPlan::Relative { .. } => {
+                if !skip_checks {
+                    println!(
+                        "  SYC envelope missing – treating payload as plaintext (relative mode)"
+                    );
+                }
+                Ok(())
+            }
+            DecryptPlan::Direct { .. } => {
+                if skip_checks {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "input {} is not an SYC envelope (magic missing)",
+                        path.display()
+                    )
+                    .into())
+                }
+            }
+        }
+    }
+
+    fn print_completion(&self) {
+        match self {
+            DecryptPlan::Relative { plaintext, .. } => {
+                println!(
+                    "  wrote decrypted output atomically to {}",
+                    plaintext.display()
+                );
+            }
+            DecryptPlan::Direct { plaintext, .. } => {
+                println!("  wrote decrypted output to {}", plaintext.display());
+            }
+        }
+    }
+}
+
+fn parse_optional_envelope(bytes: &[u8], skip_checks: bool) -> Result<Option<ParsedEnvelope>> {
+    if has_syc_magic(bytes) {
+        let parsed = parse_envelope(bytes)?;
+        verify_stub_signature(&parsed, skip_checks)?;
+        Ok(Some(parsed))
+    } else {
+        Ok(None)
+    }
 }
 
 fn handle_file_inspect(context: &AppContext, args: FileInspectArgs) -> Result<()> {
@@ -278,16 +420,59 @@ fn handle_file_inspect(context: &AppContext, args: FileInspectArgs) -> Result<()
         println!("  identity: {}", identity);
     }
     println!("  verbose: {}", yes_no(args.verbose));
-    println!("  TODO: read envelope header and report recipient, sender, and schema version");
-    println!("  TODO: look up local key availability before attempting decrypt");
-
-    let ciphertext = fs::read(&ciphertext_path)?;
-    let info = inspect_ciphertext(&ciphertext);
-    println!(
-        "  stub envelope present: {}",
-        yes_no(info.envelope.is_stubbed())
-    );
-    println!("  file size: {} bytes", info.length);
+    let bytes = fs::read(&ciphertext_path)?;
+    if let Some(parsed) = parse_optional_envelope(&bytes, false)? {
+        println!(
+            "  envelope magic: {} (version {})",
+            std::str::from_utf8(MAGIC).unwrap_or("SYC1"),
+            CURRENT_VERSION
+        );
+        println!("  created_at: {}", parsed.prelude.created_at);
+        println!(
+            "  sender: {} (ik_fingerprint: {})",
+            parsed.prelude.sender.identity, parsed.prelude.sender.ik_fingerprint
+        );
+        println!("  recipients ({}):", parsed.prelude.recipients.len());
+        for recipient in &parsed.prelude.recipients {
+            let identity = recipient
+                .identity
+                .as_deref()
+                .unwrap_or("<unspecified-identity>");
+            let device = recipient
+                .device_label
+                .as_deref()
+                .unwrap_or("<unspecified-device>");
+            println!(
+                "    - {} [{}] spk={} pqspk={}",
+                identity,
+                device,
+                recipient.spk_fingerprint.as_deref().unwrap_or("<none>"),
+                recipient.pqspk_fingerprint.as_deref().unwrap_or("<none>")
+            );
+        }
+        println!(
+            "  cipher: suite={} segments={} last_segment_bytes={} ciphertext_len={}",
+            parsed.prelude.cipher.suite,
+            parsed.prelude.cipher.segment_count,
+            parsed.prelude.cipher.last_segment_bytes,
+            parsed.prelude.cipher.ciphertext_len
+        );
+        if let Some(meta) = &parsed.prelude.public_meta
+            && let Some(filename_hint) = &meta.filename_hint {
+                println!("  filename hint: {}", filename_hint);
+            }
+        println!("  prelude size: {} bytes", parsed.prelude_bytes.len());
+        println!("  signature size: {} bytes", parsed.signature.len());
+        println!("  payload bytes: {}", parsed.ciphertext.len());
+    } else {
+        let info = inspect_ciphertext(&bytes);
+        println!("  not an SYC envelope – fallback stub header check");
+        println!(
+            "  stub ciphertext marker present: {}",
+            yes_no(info.envelope.is_stubbed())
+        );
+        println!("  file size: {} bytes", info.length);
+    }
 
     Ok(())
 }

@@ -1,4 +1,5 @@
 use super::*;
+use std::fs;
 use std::io::Write;
 use tempfile::tempdir;
 
@@ -25,6 +26,14 @@ fn resolve_roots_errors_without_any_sources() {
     let vault = tempdir().unwrap();
     let err = resolve_roots(None, None, vault.path()).unwrap_err();
     assert!(err.to_string().contains("unable to determine data root"));
+}
+
+#[test]
+fn resolve_roots_requires_shadow_source() {
+    let dir = tempdir().unwrap();
+    let data_override = dir.path().join("data");
+    let err = resolve_roots(Some(data_override), None, dir.path()).unwrap_err();
+    assert!(err.to_string().contains("shadow root"));
 }
 
 #[test]
@@ -174,6 +183,17 @@ fn detect_single_identity_reports_expected_cases() {
 }
 
 #[test]
+fn detect_single_identity_uses_fallback_when_parse_fails() {
+    let dir = tempdir().unwrap();
+    let vault = dir.path();
+    fs::create_dir_all(vault.join("keys")).unwrap();
+    let key_path = vault.join("keys/raw.key");
+    std::fs::write(&key_path, b"garbage").unwrap();
+    let identity = detect_single_identity(vault).unwrap();
+    assert_eq!(identity, "raw");
+}
+
+#[test]
 fn atomic_write_replaces_existing_content() {
     let dir = tempdir().unwrap();
     let file_path = dir.path().join("data.bin");
@@ -181,6 +201,14 @@ fn atomic_write_replaces_existing_content() {
     atomic_write(&file_path, b"second").unwrap();
     let contents = std::fs::read(&file_path).unwrap();
     assert_eq!(contents, b"second");
+}
+
+#[test]
+fn atomic_write_creates_parent_directories() {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("nested/deeper/output.txt");
+    atomic_write(&file_path, b"bytes").unwrap();
+    assert_eq!(std::fs::read(&file_path).unwrap(), b"bytes");
 }
 
 #[test]

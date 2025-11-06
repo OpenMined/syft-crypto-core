@@ -5,9 +5,6 @@ use std::path::Path;
 
 use syft_crypto_protocol::PublicKeyBundle;
 
-const STUB_KEY_PREFIX: &str = "SYC-STUB-KEY";
-const STUB_ENVELOPE_HEADER: &[u8] = b"SYC-STUB-CIPHERTEXT\n";
-
 // Temporary stub to ensure protocol dependency is linked
 pub(crate) fn ensure_protocol_dependency() {
     let _ = core::mem::size_of::<PublicKeyBundle>();
@@ -31,31 +28,36 @@ pub(crate) struct CipherInspection {
     pub(crate) length: usize,
 }
 
-/// Indicates whether bytes were wrapped using the stub envelope or left as plaintext.
+/// Indicates whether bytes were wrapped using an SYC envelope or left as plaintext.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CipherEnvelope {
-    Stubbed,
+    Wrapped,
     Plaintext,
 }
 
 impl CipherEnvelope {
     pub(crate) fn is_stubbed(self) -> bool {
-        matches!(self, CipherEnvelope::Stubbed)
+        matches!(self, CipherEnvelope::Wrapped)
     }
 }
 
 pub(crate) fn generate_identity_material(identity: &str) -> Result<GeneratedIdentity> {
     // TODO: Replace stub with libsignal identity + pre-key derivation.
-    let key_file = format!("{STUB_KEY_PREFIX}:{identity}\n").into_bytes();
+    let key_doc = json!({
+        "identity": identity,
+        "note": "Placeholder key material – replace with real libsignal export",
+    });
+    let mut key_file = serde_json::to_vec_pretty(&key_doc)?;
+    key_file.push(b'\n');
 
     let public_bundle = json!({
         "identity": identity,
         "stub": true,
         "note": "Placeholder bundle – replace once libsignal export is wired",
         "keys": {
-            "identity": format!("{STUB_KEY_PREFIX}/identity"),
-            "signed_prekey": format!("{STUB_KEY_PREFIX}/signed_prekey"),
-            "pq_prekey": format!("{STUB_KEY_PREFIX}/pq_prekey"),
+            "identity": "placeholder",
+            "signed_prekey": "placeholder",
+            "pq_prekey": "placeholder",
         }
     });
 
@@ -66,12 +68,11 @@ pub(crate) fn generate_identity_material(identity: &str) -> Result<GeneratedIden
 }
 
 pub(crate) fn load_identity_label(path: &Path) -> Result<String> {
-    // TODO: Parse actual key material format once wired.
     let contents = fs::read_to_string(path)?;
-    for line in contents.lines() {
-        if let Some(rest) = line.strip_prefix(&format!("{STUB_KEY_PREFIX}:")) {
-            return Ok(rest.trim().to_string());
-        }
+    if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&contents)
+        && let Some(identity) = map.get("identity").and_then(|v| v.as_str())
+    {
+        return Ok(identity.to_string());
     }
     Err(format!("unable to parse identity from {}", path.display()).into())
 }
@@ -82,9 +83,7 @@ pub(crate) fn encrypt_bytes(
     plaintext: &[u8],
 ) -> Result<Vec<u8>> {
     // TODO: Replace with libsignal sealing (PQXDH + payload encryption).
-    let mut ciphertext = STUB_ENVELOPE_HEADER.to_vec();
-    ciphertext.extend_from_slice(plaintext);
-    Ok(ciphertext)
+    Ok(plaintext.to_vec())
 }
 
 pub(crate) fn decrypt_bytes(
@@ -93,20 +92,13 @@ pub(crate) fn decrypt_bytes(
     skip_checks: bool,
 ) -> Result<DecryptionResult> {
     // TODO: Replace with libsignal decryption + signature verification.
-    if ciphertext.starts_with(STUB_ENVELOPE_HEADER) {
-        let plaintext = ciphertext[STUB_ENVELOPE_HEADER.len()..].to_vec();
-        Ok(DecryptionResult {
-            plaintext,
-            envelope: CipherEnvelope::Stubbed,
-        })
-    } else if skip_checks {
-        Ok(DecryptionResult {
-            plaintext: ciphertext.to_vec(),
-            envelope: CipherEnvelope::Plaintext,
-        })
-    } else {
-        Err("ciphertext does not contain expected stub envelope".into())
-    }
+    let plaintext = ciphertext.to_vec();
+    let envelope = CipherEnvelope::Wrapped;
+    let _ = skip_checks; // placeholder until real validation is wired
+    Ok(DecryptionResult {
+        plaintext,
+        envelope,
+    })
 }
 
 pub(crate) fn decrypt_allow_plaintext(
@@ -114,23 +106,15 @@ pub(crate) fn decrypt_allow_plaintext(
     ciphertext: &[u8],
 ) -> Result<DecryptionResult> {
     // TODO: Replace with libsignal decryption + signature verification.
-    if ciphertext.starts_with(STUB_ENVELOPE_HEADER) {
-        Ok(DecryptionResult {
-            plaintext: ciphertext[STUB_ENVELOPE_HEADER.len()..].to_vec(),
-            envelope: CipherEnvelope::Stubbed,
-        })
-    } else {
-        Ok(DecryptionResult {
-            plaintext: ciphertext.to_vec(),
-            envelope: CipherEnvelope::Plaintext,
-        })
-    }
+    Ok(DecryptionResult {
+        plaintext: ciphertext.to_vec(),
+        envelope: CipherEnvelope::Plaintext,
+    })
 }
 
 pub(crate) fn inspect_ciphertext(ciphertext: &[u8]) -> CipherInspection {
-    // TODO: Extract envelope metadata once protocol integration lands.
-    let envelope = if ciphertext.starts_with(STUB_ENVELOPE_HEADER) {
-        CipherEnvelope::Stubbed
+    let envelope = if has_syc_magic(ciphertext) {
+        CipherEnvelope::Wrapped
     } else {
         CipherEnvelope::Plaintext
     };
@@ -138,5 +122,22 @@ pub(crate) fn inspect_ciphertext(ciphertext: &[u8]) -> CipherInspection {
     CipherInspection {
         envelope,
         length: ciphertext.len(),
+    }
+}
+
+pub use crate::envelope::{
+    CURRENT_VERSION, MAGIC, build_stub_envelope, has_syc_magic, parse_envelope,
+    verify_stub_signature,
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inspect_ciphertext_marks_plaintext() {
+        let inspection = inspect_ciphertext(b"no envelope");
+        assert_eq!(inspection.envelope, CipherEnvelope::Plaintext);
+        assert_eq!(inspection.length, 11);
     }
 }

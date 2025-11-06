@@ -42,7 +42,9 @@ fn handle_command_routes_file_variant() {
     let file_path = context.data_root.join("blob.bin");
     fs::create_dir_all(file_path.parent().unwrap()).unwrap();
     let payload = protocol_interface::encrypt_bytes("alice", None, b"bytes").unwrap();
-    fs::write(&file_path, payload).unwrap();
+    let envelope =
+        protocol_interface::build_stub_envelope("alice", &[], &payload, None).unwrap();
+    fs::write(&file_path, envelope).unwrap();
 
     let args = FileInspectArgs {
         input: PathBuf::from("blob.bin"),
