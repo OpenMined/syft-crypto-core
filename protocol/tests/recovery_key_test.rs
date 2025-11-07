@@ -1,8 +1,3 @@
-//! RecoveryKey integration tests
-//!
-//! This file now contains both the existing public API tests as well as the
-//! former unit tests that lived in `protocol/src/keys.rs`.
-
 use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::thread;
