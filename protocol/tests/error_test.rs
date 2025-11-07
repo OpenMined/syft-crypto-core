@@ -30,6 +30,12 @@ fn test_recovery_error_invalid_length() {
 }
 
 #[test]
+fn test_recovery_error_insufficient_entropy() {
+    let err = RecoveryError::InsufficientEntropy;
+    assert_eq!(err.to_string(), "Recovery key has insufficient entropy");
+}
+
+#[test]
 fn test_serialization_error() {
     let err = SerializationError::MissingIdentityKey;
     assert_eq!(err.to_string(), "Missing identity key in DID document");
@@ -40,4 +46,15 @@ fn test_error_conversion() {
     let io_err = io::Error::new(io::ErrorKind::NotFound, "file not found");
     let key_err: KeyError = io_err.into();
     assert!(matches!(key_err, KeyError::StorageError(_)));
+}
+
+#[test]
+fn test_error_message_serialization_roundtrip() {
+    let err = RecoveryError::InvalidLength {
+        expected: 64,
+        actual: 10,
+    };
+    let serialized = serde_json::to_string(&err.to_string()).unwrap();
+    let restored: String = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(restored, err.to_string());
 }

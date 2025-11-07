@@ -56,6 +56,16 @@ check-cli:
     just test-cli
     just test-integration-cli
 
+# Run full protocol check (lint-fix, test-protocol)
+check-protocol:
+    just lint-fix
+    just test-protocol
+
+# Run full workspace check (CLI + protocol)
+check-all:
+    just check-cli
+    just check-protocol
+
 # Run coverage on CLI workspace
 coverage-cli *ARGS:
     ./coverage.sh --cli {{ARGS}}

@@ -68,6 +68,10 @@ pub enum RecoveryError {
     #[error("Key derivation failed during recovery")]
     DerivationFailed,
 
+    /// Recovery key failed entropy validation
+    #[error("Recovery key has insufficient entropy")]
+    InsufficientEntropy,
+
     /// Recovered keys don't match published DID document
     #[error("Key mismatch: {detail}")]
     KeyMismatch { detail: String },

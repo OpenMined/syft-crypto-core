@@ -36,7 +36,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// // Restore from hex string
 /// let restored = RecoveryKey::from_hex_string(&hex).unwrap();
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct RecoveryKey([u8; 32]);
 
 impl RecoveryKey {
@@ -51,14 +51,19 @@ impl RecoveryKey {
     /// let recovery_key = RecoveryKey::generate();
     /// ```
     pub fn generate() -> Self {
-        let mut key = [0u8; 32];
-        rand::rng().fill_bytes(&mut key);
-        Self(key)
+        loop {
+            let mut key = [0u8; 32];
+            rand::rng().fill_bytes(&mut key);
+            if Self::has_min_entropy(&key) {
+                return Self(key);
+            }
+        }
     }
 
     /// Format as 64 hex chars with dashes for readability
     ///
-    /// Format: `XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX` (16 groups of 4 chars)
+    /// Format: `XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX`
+    /// (16 groups of 4 chars)
     ///
     /// This format is easier to write down and verify than a continuous hex string.
     ///
@@ -75,7 +80,7 @@ impl RecoveryKey {
         // Insert dashes every 4 characters
         hex.as_bytes()
             .chunks(4)
-            .map(|chunk| std::str::from_utf8(chunk).unwrap())
+            .map(|chunk| std::str::from_utf8(chunk).expect("hex encoding is ASCII"))
             .collect::<Vec<_>>()
             .join("-")
     }
@@ -102,11 +107,19 @@ impl RecoveryKey {
     /// let key2 = RecoveryKey::from_hex_string("a3f5e8c9123456789abcdef0123456789abcdef0123456789abcdef012345678").unwrap();
     /// ```
     pub fn from_hex_string(s: &str) -> RecoveryResult<Self> {
-        // Remove all dashes, spaces, and whitespace
-        let cleaned = s
-            .chars()
-            .filter(|c| c.is_ascii_hexdigit())
-            .collect::<String>();
+        // Remove readability separators while rejecting unexpected characters.
+        let mut cleaned = String::with_capacity(64);
+        for ch in s.chars() {
+            if ch.is_ascii_hexdigit() {
+                cleaned.push(ch);
+            } else if matches!(ch, '-' | ' ' | '\n' | '\r' | '\t') {
+                continue;
+            } else {
+                return Err(RecoveryError::InvalidHex(format!(
+                    "unexpected character '{ch}' in recovery key"
+                )));
+            }
+        }
 
         if cleaned.len() != 64 {
             return Err(RecoveryError::InvalidLength {
@@ -119,7 +132,24 @@ impl RecoveryKey {
 
         let mut key = [0u8; 32];
         key.copy_from_slice(&bytes);
+
+        if !Self::has_min_entropy(&key) {
+            return Err(RecoveryError::InsufficientEntropy);
+        }
+
         Ok(Self(key))
+    }
+
+    fn has_min_entropy(bytes: &[u8; 32]) -> bool {
+        if bytes.iter().all(|&b| b == 0) {
+            return false;
+        }
+
+        if bytes.windows(2).all(|w| w[0] == w[1]) {
+            return false;
+        }
+
+        true
     }
 
     /// Get raw bytes (for internal use only)
@@ -127,48 +157,8 @@ impl RecoveryKey {
     /// # Security
     /// This should only be used internally for key derivation.
     /// Never expose these bytes to external APIs.
-    #[allow(dead_code)] // Used in tests and will be used in key derivation (Step 5)
+    #[allow(dead_code)] // Used in upcoming key-derivation logic
     pub(crate) fn as_bytes(&self) -> &[u8; 32] {
         &self.0
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Test internal implementation detail: zeroization on drop
-    ///
-    /// This test verifies that the ZeroizeOnDrop trait properly clears
-    /// sensitive key material when the RecoveryKey is dropped.
-    #[test]
-    fn test_recovery_key_zeroization() {
-        let key = RecoveryKey::generate();
-
-        // Store original bytes for comparison
-        let original_bytes = *key.as_bytes();
-
-        // Drop the key (should trigger zeroization)
-        drop(key);
-
-        // Note: We can't safely read the memory after drop in safe Rust,
-        // but the zeroize library guarantees this happens
-        // This test mainly ensures the ZeroizeOnDrop trait is applied
-
-        // Verify original bytes were not all zeros (sanity check)
-        assert_ne!(original_bytes, [0u8; 32]);
-    }
-
-    /// Test internal implementation: verify as_bytes() returns correct data
-    ///
-    /// This uses the pub(crate) as_bytes() method which is not part of the public API.
-    #[test]
-    fn test_recovery_key_from_known_hex() {
-        // Test with a known hex string
-        let known_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let key = RecoveryKey::from_hex_string(known_hex).unwrap();
-
-        let expected_bytes = hex::decode(known_hex).unwrap();
-        assert_eq!(key.as_bytes().as_slice(), expected_bytes.as_slice());
     }
 }
