@@ -7,12 +7,12 @@ use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::thread;
 
-use syft_crypto_protocol::{RecoveryError, RecoveryKey};
+use syft_crypto_protocol::{RecoveryError, SyftRecoveryKey};
 
 #[test]
 fn test_recovery_key_generation() {
-    let key1 = RecoveryKey::generate();
-    let key2 = RecoveryKey::generate();
+    let key1 = SyftRecoveryKey::generate();
+    let key2 = SyftRecoveryKey::generate();
 
     println!("\n=== Recovery Key Generation ===");
     println!("Key 1: {}", key1.to_hex_string());
@@ -25,9 +25,9 @@ fn test_recovery_key_generation() {
 
 #[test]
 fn test_recovery_key_hex_roundtrip() {
-    let key = RecoveryKey::generate();
+    let key = SyftRecoveryKey::generate();
     let hex = key.to_hex_string();
-    let restored = RecoveryKey::from_hex_string(&hex).unwrap();
+    let restored = SyftRecoveryKey::from_hex_string(&hex).unwrap();
 
     println!("\n=== Hex Roundtrip Test ===");
     println!("Original key:  {}", key.to_hex_string());
@@ -40,7 +40,7 @@ fn test_recovery_key_hex_roundtrip() {
 
 #[test]
 fn test_recovery_key_hex_format() {
-    let key = RecoveryKey::generate();
+    let key = SyftRecoveryKey::generate();
     let hex = key.to_hex_string();
 
     println!("\n=== Hex Format Test ===");
@@ -57,14 +57,14 @@ fn test_recovery_key_hex_format() {
     assert_eq!(hex.matches('-').count(), 15);
 
     // Should be parseable
-    assert!(RecoveryKey::from_hex_string(&hex).is_ok());
+    assert!(SyftRecoveryKey::from_hex_string(&hex).is_ok());
 }
 
 #[test]
 fn test_recovery_key_hex_with_dashes() {
     let hex_with_dashes =
         "a3f5-e8c9-1234-5678-9abc-def0-1234-5678-9abc-def0-1234-5678-9abc-def0-1234-5678";
-    let key = RecoveryKey::from_hex_string(hex_with_dashes).unwrap();
+    let key = SyftRecoveryKey::from_hex_string(hex_with_dashes).unwrap();
 
     println!("\n=== Parsing Hex With Dashes ===");
     println!("Input:         {}", hex_with_dashes);
@@ -72,14 +72,14 @@ fn test_recovery_key_hex_with_dashes() {
     println!("Reformatted:   {}", key.to_hex_string());
 
     // Roundtrip should work
-    let restored = RecoveryKey::from_hex_string(&key.to_hex_string()).unwrap();
+    let restored = SyftRecoveryKey::from_hex_string(&key.to_hex_string()).unwrap();
     assert!(key == restored);
 }
 
 #[test]
 fn test_recovery_key_hex_without_dashes() {
     let hex_no_dashes = "a3f5e8c912345678 9abcdef012345678 9abcdef012345678 9abcdef012345678";
-    let key = RecoveryKey::from_hex_string(hex_no_dashes).unwrap();
+    let key = SyftRecoveryKey::from_hex_string(hex_no_dashes).unwrap();
 
     println!("\n=== Parsing Hex Without Dashes (with spaces) ===");
     println!("Input:         {}", hex_no_dashes);
@@ -96,7 +96,7 @@ fn test_recovery_key_hex_without_dashes() {
 #[test]
 fn test_recovery_key_invalid_length() {
     let too_short = "a3f5-e8c9";
-    let result = RecoveryKey::from_hex_string(too_short);
+    let result = SyftRecoveryKey::from_hex_string(too_short);
 
     println!("\n=== Invalid Length Test ===");
     println!("Input:  '{}'", too_short);
@@ -122,7 +122,7 @@ fn test_recovery_key_invalid_length() {
 fn test_recovery_key_invalid_hex() {
     // Test strings with non-hex characters to ensure we surface InvalidHex errors
     let invalid = "a3f5e8c9123456789abcdef012345678g"; // 'g' is not valid hex
-    let result = RecoveryKey::from_hex_string(invalid);
+    let result = SyftRecoveryKey::from_hex_string(invalid);
 
     println!("\n=== Invalid Hex Characters Test ===");
     println!("Input:  '{}'", invalid);
@@ -145,7 +145,7 @@ fn test_recovery_key_invalid_hex() {
 
 #[test]
 fn test_recovery_key_clone() {
-    let key1 = RecoveryKey::generate();
+    let key1 = SyftRecoveryKey::generate();
     let key2 = key1.clone();
 
     println!("\n=== Clone Test ===");
@@ -159,14 +159,14 @@ fn test_recovery_key_clone() {
 #[test]
 fn test_recovery_key_rejects_low_entropy_imports() {
     let zeros = "0".repeat(64);
-    let err = match RecoveryKey::from_hex_string(&zeros) {
+    let err = match SyftRecoveryKey::from_hex_string(&zeros) {
         Ok(_) => panic!("expected zeros to fail"),
         Err(err) => err,
     };
     assert!(matches!(err, RecoveryError::InsufficientEntropy));
 
     let repeating = "11".repeat(32);
-    let err = match RecoveryKey::from_hex_string(&repeating) {
+    let err = match SyftRecoveryKey::from_hex_string(&repeating) {
         Ok(_) => panic!("expected repeating bytes to fail"),
         Err(err) => err,
     };
@@ -176,7 +176,7 @@ fn test_recovery_key_rejects_low_entropy_imports() {
 #[test]
 fn test_recovery_key_concurrent_generation() {
     let handles: Vec<_> = (0..32)
-        .map(|_| thread::spawn(RecoveryKey::generate))
+        .map(|_| thread::spawn(SyftRecoveryKey::generate))
         .collect();
 
     let mut keys = Vec::with_capacity(handles.len());
@@ -190,7 +190,7 @@ fn test_recovery_key_concurrent_generation() {
 
 #[test]
 fn test_recovery_key_large_batch_generation() {
-    let batch: Vec<_> = (0..1_000).map(|_| RecoveryKey::generate()).collect();
+    let batch: Vec<_> = (0..1_000).map(|_| SyftRecoveryKey::generate()).collect();
     assert_eq!(batch.len(), 1_000);
 
     let unique: HashSet<_> = batch.iter().map(|k| k.to_hex_string()).collect();
@@ -203,7 +203,7 @@ fn test_recovery_key_large_batch_generation() {
 /// sensitive key material when the RecoveryKey is dropped.
 #[test]
 fn test_recovery_key_zeroization() {
-    let key = RecoveryKey::generate();
+    let key = SyftRecoveryKey::generate();
 
     // Store original bytes for comparison
     let original_bytes = recovery_key_bytes(&key);
@@ -226,7 +226,7 @@ fn test_recovery_key_zeroization() {
 fn test_recovery_key_from_known_hex() {
     // Test with a known hex string
     let known_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    let key = RecoveryKey::from_hex_string(known_hex).unwrap();
+    let key = SyftRecoveryKey::from_hex_string(known_hex).unwrap();
 
     let expected_bytes = hex::decode(known_hex).unwrap();
     assert_eq!(
@@ -250,7 +250,7 @@ fn test_entropy_rejection_rules() {
     assert!(has_min_entropy(&ascending));
 }
 
-fn recovery_key_bytes(key: &RecoveryKey) -> [u8; 32] {
+fn recovery_key_bytes(key: &SyftRecoveryKey) -> [u8; 32] {
     let normalized = key.to_hex_string().replace('-', "");
     let decoded = hex::decode(normalized).expect("hex encoding should decode");
     let mut bytes = [0u8; 32];

@@ -5,7 +5,7 @@
 
 use libsignal_protocol::*;
 use rand::SeedableRng;
-use syft_crypto_protocol::{AlicePqxdhParameters, BobPqxdhParameters, PublicKeyBundle};
+use syft_crypto_protocol::{AlicePqxdhParameters, BobPqxdhParameters, SyftPublicKeyBundle};
 
 #[test]
 fn test_public_key_bundle_creation() {
@@ -20,7 +20,7 @@ fn test_public_key_bundle_creation() {
     let pq_pre_key_pair = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
 
     println!("\n📝 Creating PublicKeyBundle...");
-    let bundle = PublicKeyBundle::new(
+    let bundle = SyftPublicKeyBundle::new(
         &identity_key_pair,
         &signed_pre_key_pair,
         &pq_pre_key_pair,
@@ -239,7 +239,7 @@ fn test_bundle_signature_verification() {
     let signed_pre_key_pair = KeyPair::generate(&mut rng);
     let pq_pre_key_pair = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
 
-    let bundle = PublicKeyBundle::new(
+    let bundle = SyftPublicKeyBundle::new(
         &identity_key_pair,
         &signed_pre_key_pair,
         &pq_pre_key_pair,
@@ -285,7 +285,7 @@ fn test_bundle_with_wrong_signature() {
     let signed_pre_key_pair = KeyPair::generate(&mut rng);
     let pq_pre_key_pair = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
 
-    let mut bundle = PublicKeyBundle::new(
+    let mut bundle = SyftPublicKeyBundle::new(
         &identity_key_pair,
         &signed_pre_key_pair,
         &pq_pre_key_pair,

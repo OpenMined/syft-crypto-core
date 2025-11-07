@@ -3,11 +3,11 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 
-use syft_crypto_protocol::PublicKeyBundle;
+use syft_crypto_protocol::SyftPublicKeyBundle;
 
 // Temporary stub to ensure protocol dependency is linked
 pub(crate) fn ensure_protocol_dependency() {
-    let _ = core::mem::size_of::<PublicKeyBundle>();
+    let _ = core::mem::size_of::<SyftPublicKeyBundle>();
 }
 
 /// Output of the stubbed identity generation flow.
