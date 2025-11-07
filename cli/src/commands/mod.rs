@@ -1,6 +1,7 @@
 mod bytes;
 mod file;
 mod key;
+mod vault;
 
 use clap::{Parser, Subcommand};
 use std::fmt::{self, Display};
@@ -13,6 +14,7 @@ use crate::protocol_interface::{has_syc_magic, parse_envelope, verify_stub_signa
 pub(crate) use bytes::BytesCommand;
 pub(crate) use file::FileCommand;
 pub(crate) use key::KeyCommand;
+pub(crate) use vault::VaultCommand;
 
 /// Syft Crypto (syc) CLI – manage Signal-compatible post-quantum keys and files.
 #[derive(Parser, Debug)]
@@ -63,6 +65,10 @@ pub(crate) enum Command {
     /// Encrypt, decrypt, and inspect sealed blobs
     #[command(subcommand)]
     File(FileCommand),
+
+    /// Export or restore vault snapshots
+    #[command(subcommand)]
+    Vault(VaultCommand),
 }
 
 pub(crate) fn handle_command(context: &AppContext, command: Command) -> Result<()> {
@@ -70,6 +76,7 @@ pub(crate) fn handle_command(context: &AppContext, command: Command) -> Result<(
         Command::Bytes(cmd) => bytes::handle_bytes_command(context, cmd),
         Command::Key(cmd) => key::handle_key_command(context, cmd),
         Command::File(cmd) => file::handle_file_command(context, cmd),
+        Command::Vault(cmd) => vault::handle_vault_command(context, cmd),
     }
 }
 

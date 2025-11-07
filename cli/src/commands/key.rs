@@ -1,11 +1,11 @@
 use crate::app::{
-    AppContext, Result, bundle_path_for_identity, ensure_vault_layout, fallback_identity_from_path,
-    key_path_for_identity, read_identity_from_key, resolve_data_path,
+    AppContext, Result, bundle_path_for_identity, ensure_vault_layout, expand_home,
+    fallback_identity_from_path, key_path_for_identity, read_identity_from_key, resolve_data_path,
 };
 use crate::commands::PlanPrinter;
 use crate::protocol_interface::{generate_identity_material, parse_public_bundle};
 use clap::{Args, Subcommand};
-use serde_json::to_string_pretty;
+use serde_json::{Value, to_string_pretty};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -26,6 +26,12 @@ pub(crate) enum KeyCommand {
 
     /// Validate bundle signatures and report metadata
     Verify(KeyVerifyArgs),
+
+    /// Export private key material for safekeeping
+    Backup(KeyBackupArgs),
+
+    /// Restore private key material from a backup file
+    Restore(KeyRestoreArgs),
 }
 
 pub(crate) fn handle_key_command(context: &AppContext, command: KeyCommand) -> Result<()> {
@@ -35,6 +41,8 @@ pub(crate) fn handle_key_command(context: &AppContext, command: KeyCommand) -> R
         KeyCommand::Recover(args) => handle_key_recover(context, args),
         KeyCommand::List(args) => handle_key_list(context, args),
         KeyCommand::Verify(args) => handle_key_verify(context, args),
+        KeyCommand::Backup(args) => handle_key_backup(context, args),
+        KeyCommand::Restore(args) => handle_key_restore(context, args),
     }
 }
 
@@ -128,6 +136,38 @@ pub(crate) struct KeyVerifyArgs {
     /// Emit structured JSON describing the bundle
     #[arg(long)]
     pub(crate) json: bool,
+}
+
+/// Arguments for `syc key backup`.
+#[derive(Args, Debug)]
+pub(crate) struct KeyBackupArgs {
+    /// Identity whose private key should be exported
+    #[arg(short, long, value_name = "IDENTITY")]
+    pub(crate) identity: String,
+
+    /// Destination file path for the exported key
+    #[arg(short, long, value_name = "FILE")]
+    pub(crate) output: PathBuf,
+
+    /// Allow replacing an existing output file
+    #[arg(long)]
+    pub(crate) overwrite: bool,
+}
+
+/// Arguments for `syc key restore`.
+#[derive(Args, Debug)]
+pub(crate) struct KeyRestoreArgs {
+    /// Backup file created by `key backup`
+    #[arg(short, long, value_name = "FILE")]
+    pub(crate) input: PathBuf,
+
+    /// Expected identity label; inferred from file when omitted
+    #[arg(long, value_name = "IDENTITY")]
+    pub(crate) identity: Option<String>,
+
+    /// Replace existing key material without prompting
+    #[arg(long)]
+    pub(crate) overwrite: bool,
 }
 
 fn handle_key_generate(context: &AppContext, args: KeyGenerateArgs) -> Result<()> {
@@ -378,6 +418,97 @@ fn read_bundle_body(path: &Path) -> Result<String> {
 
 fn missing_expected_identity<'a>(body: &str, expected: Option<&'a str>) -> Option<&'a str> {
     expected.filter(|identity| !body.contains(*identity))
+}
+
+fn handle_key_backup(context: &AppContext, args: KeyBackupArgs) -> Result<()> {
+    let plan = PlanPrinter::new("backup private key");
+    let output_path = expand_home(&args.output);
+    plan.field("vault", context.vault_path.display())
+        .field("identity", &args.identity)
+        .field("output file", output_path.display())
+        .bool("overwrite existing", args.overwrite);
+
+    ensure_vault_layout(&context.vault_path)?;
+    let source = key_path_for_identity(&context.vault_path, &args.identity);
+    if !source.exists() {
+        return Err(format!(
+            "key material for {} not found at {}",
+            args.identity,
+            source.display()
+        )
+        .into());
+    }
+
+    if output_path.exists() && !args.overwrite {
+        return Err(format!(
+            "output {} already exists (use --overwrite to replace)",
+            output_path.display()
+        )
+        .into());
+    }
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&source, &output_path)?;
+    plan.info("backup complete");
+    Ok(())
+}
+
+fn handle_key_restore(context: &AppContext, args: KeyRestoreArgs) -> Result<()> {
+    let plan = PlanPrinter::new("restore private key from backup");
+    let input_path = expand_home(&args.input);
+    plan.field("vault", context.vault_path.display())
+        .field("input file", input_path.display())
+        .bool("overwrite existing", args.overwrite);
+
+    if !input_path.exists() {
+        return Err(format!("input {} not found", input_path.display()).into());
+    }
+
+    let inferred_identity = read_identity_from_key(input_path.clone())
+        .or_else(|_| infer_identity_from_backup(&input_path))?;
+    let identity = match &args.identity {
+        Some(expected) => {
+            if expected != &inferred_identity {
+                return Err(format!(
+                    "backup identity '{}' does not match expected '{}'",
+                    inferred_identity, expected
+                )
+                .into());
+            }
+            expected.clone()
+        }
+        None => inferred_identity,
+    };
+
+    ensure_vault_layout(&context.vault_path)?;
+    let dest = key_path_for_identity(&context.vault_path, &identity);
+    if dest.exists() && !args.overwrite {
+        return Err(format!(
+            "key for {} already exists at {} (use --overwrite to replace)",
+            identity,
+            dest.display()
+        )
+        .into());
+    }
+
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&input_path, &dest)?;
+    plan.info(&format!("restored key material for {}", identity));
+    Ok(())
+}
+
+fn infer_identity_from_backup(path: &PathBuf) -> Result<String> {
+    let body = fs::read_to_string(path)?;
+    let value: Value = serde_json::from_str(&body)?;
+    value
+        .get("identity")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string())
+        .ok_or_else(|| "unable to infer identity from key backup".into())
 }
 
 #[cfg(test)]
