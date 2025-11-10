@@ -4,7 +4,7 @@
 /// corrupted data, and potential attack vectors. Inspired by libsignal's security tests.
 use libsignal_protocol::*;
 use rand::SeedableRng;
-use syft_crypto_protocol::PublicKeyBundle;
+use syft_crypto_protocol::SyftPublicKeyBundle;
 
 /// Test that PublicKeyBundle rejects corrupted EC prekey signature
 #[test]
@@ -19,7 +19,7 @@ fn test_reject_corrupted_ec_signature() {
     let signed_pre_key_pair = KeyPair::generate(&mut rng);
     let pq_pre_key_pair = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
 
-    let mut bundle = PublicKeyBundle::new(
+    let mut bundle = SyftPublicKeyBundle::new(
         &identity_key_pair,
         &signed_pre_key_pair,
         &pq_pre_key_pair,
@@ -64,7 +64,7 @@ fn test_reject_corrupted_pq_signature() {
     let signed_pre_key_pair = KeyPair::generate(&mut rng);
     let pq_pre_key_pair = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
 
-    let mut bundle = PublicKeyBundle::new(
+    let mut bundle = SyftPublicKeyBundle::new(
         &identity_key_pair,
         &signed_pre_key_pair,
         &pq_pre_key_pair,
@@ -132,7 +132,7 @@ fn test_reject_wrong_identity_key_signature() {
 
     // Create bundle with Alice's keys but Bob's signatures
     println!("\n📦 Creating malicious bundle (Alice's keys + Bob's signatures)...");
-    let malicious_bundle = PublicKeyBundle {
+    let malicious_bundle = SyftPublicKeyBundle {
         identity_key: *bob_identity.identity_key(), // Bob's identity
         signed_pre_key: alice_signed_prekey.public_key,
         signed_pre_key_signature: fake_ec_sig,
@@ -190,12 +190,13 @@ fn test_reject_swapped_prekeys() {
 
     // Create bundle with key set 1
     let bundle_1 =
-        PublicKeyBundle::new(&identity_key_pair, &signed_prekey_1, &pq_prekey_1, &mut rng).unwrap();
+        SyftPublicKeyBundle::new(&identity_key_pair, &signed_prekey_1, &pq_prekey_1, &mut rng)
+            .unwrap();
     println!("\n✅ Bundle 1 created (keys from set 1)");
 
     // Create malicious bundle: signatures from bundle 1, but keys from set 2
     println!("\n🔧 Creating malicious bundle (signatures for set 1, but keys from set 2)...");
-    let malicious_bundle = PublicKeyBundle {
+    let malicious_bundle = SyftPublicKeyBundle {
         identity_key: bundle_1.identity_key,
         signed_pre_key: signed_prekey_2.public_key, // Swapped!
         signed_pre_key_signature: bundle_1.signed_pre_key_signature.clone(),
@@ -233,7 +234,7 @@ fn test_reject_zero_signature() {
     let signed_pre_key_pair = KeyPair::generate(&mut rng);
     let pq_pre_key_pair = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
 
-    let mut bundle = PublicKeyBundle::new(
+    let mut bundle = SyftPublicKeyBundle::new(
         &identity_key_pair,
         &signed_pre_key_pair,
         &pq_pre_key_pair,
@@ -256,7 +257,7 @@ fn test_reject_zero_signature() {
 
     // Restore EC signature, zero out PQ signature
     println!("\n🔧 Replacing PQ signature with zeros...");
-    let valid_bundle = PublicKeyBundle::new(
+    let valid_bundle = SyftPublicKeyBundle::new(
         &identity_key_pair,
         &signed_pre_key_pair,
         &pq_pre_key_pair,
@@ -264,7 +265,7 @@ fn test_reject_zero_signature() {
     )
     .unwrap();
 
-    let bundle2 = PublicKeyBundle {
+    let bundle2 = SyftPublicKeyBundle {
         identity_key: valid_bundle.identity_key,
         signed_pre_key: valid_bundle.signed_pre_key,
         signed_pre_key_signature: valid_bundle.signed_pre_key_signature,
@@ -296,7 +297,7 @@ fn test_bundle_size_reasonable() {
     let signed_pre_key_pair = KeyPair::generate(&mut rng);
     let pq_pre_key_pair = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
 
-    let bundle = PublicKeyBundle::new(
+    let bundle = SyftPublicKeyBundle::new(
         &identity_key_pair,
         &signed_pre_key_pair,
         &pq_pre_key_pair,
@@ -373,7 +374,7 @@ fn test_signature_verification_consistency() {
     let signed_pre_key_pair = KeyPair::generate(&mut rng);
     let pq_pre_key_pair = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
 
-    let bundle = PublicKeyBundle::new(
+    let bundle = SyftPublicKeyBundle::new(
         &identity_key_pair,
         &signed_pre_key_pair,
         &pq_pre_key_pair,

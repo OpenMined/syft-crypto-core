@@ -2,54 +2,28 @@
 //!
 //! This module defines the key types used in the PQXDH protocol:
 //! - RecoveryKey: 32-byte master secret for deterministic key derivation
-//! - IdentityKeyPair: Ed25519 keypair for signing
-//! - SignedPreKey: X25519 keypair for ECDH
-//! - PQSignedPreKey: Kyber1024 keypair for post-quantum KEM
+//! - IdentityKeyPair: Ed25519 keypair for signing (wraps libsignal)
+//! - SignedPreKey: X25519 keypair for ECDH (wraps libsignal)
+//! - PQSignedPreKey: Kyber1024 keypair for post-quantum KEM (wraps libsignal)
 //! - PrivateKeys: Container for all private key material
 
 use crate::error::{RecoveryError, RecoveryResult};
+use libsignal_protocol::{IdentityKey, IdentityKeyPair, KeyPair, PublicKey, kem};
 use rand::RngCore;
+use std::mem::ManuallyDrop;
+use std::ops::{Deref, DerefMut};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// 32-byte recovery key that deterministically derives all private keys
+/// 32-byte recovery key that deterministically derives all private keys.
 ///
 /// This is the MASTER secret that can regenerate all private keys.
-/// Users must write down the 64-character hex representation or 24-word mnemonic.
-///
-/// # Security
-/// - The recovery key should be stored securely offline
-/// - It can regenerate all private keys deterministically
-/// - If compromised, all derived keys are compromised
-/// - Automatically zeroized on drop
-///
-/// # Example
-/// ```
-/// use syft_crypto_protocol::RecoveryKey;
-///
-/// // Generate new recovery key
-/// let recovery_key = RecoveryKey::generate();
-///
-/// // Export as hex string for backup
-/// let hex = recovery_key.to_hex_string();
-/// println!("Write this down: {}", hex);
-///
-/// // Restore from hex string
-/// let restored = RecoveryKey::from_hex_string(&hex).unwrap();
-/// ```
+/// Users must write down the 64-character hex representation for backup.
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
-pub struct RecoveryKey([u8; 32]);
+pub struct SyftRecoveryKey([u8; 32]);
 
-impl RecoveryKey {
-    /// Generate a new random recovery key with 256 bits of entropy
-    ///
-    /// Uses OS-provided randomness via `OsRng` for cryptographic security.
-    ///
-    /// # Example
-    /// ```
-    /// use syft_crypto_protocol::RecoveryKey;
-    ///
-    /// let recovery_key = RecoveryKey::generate();
-    /// ```
+impl SyftRecoveryKey {
+    /// Generate a new random recovery key with 256 bits of entropy.
     pub fn generate() -> Self {
         loop {
             let mut key = [0u8; 32];
@@ -60,24 +34,10 @@ impl RecoveryKey {
         }
     }
 
-    /// Format as 64 hex chars with dashes for readability
-    ///
     /// Format: `XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX`
     /// (16 groups of 4 chars)
-    ///
-    /// This format is easier to write down and verify than a continuous hex string.
-    ///
-    /// # Example
-    /// ```
-    /// use syft_crypto_protocol::RecoveryKey;
-    ///
-    /// let key = RecoveryKey::generate();
-    /// let hex = key.to_hex_string();
-    /// println!("{}", hex);  // "a3f5-e8c9-1234-5678-..."
-    /// ```
     pub fn to_hex_string(&self) -> String {
         let hex = hex::encode(self.0);
-        // Insert dashes every 4 characters
         hex.as_bytes()
             .chunks(4)
             .map(|chunk| std::str::from_utf8(chunk).expect("hex encoding is ASCII"))
@@ -85,27 +45,9 @@ impl RecoveryKey {
             .join("-")
     }
 
-    /// Parse from hex string (with or without dashes)
+    /// Parse from hex string (with or without dashes).
     ///
-    /// Accepts formats:
-    /// - With dashes: `XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX`
-    /// - Without dashes: `XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX` (64 chars)
-    /// - Mixed spacing/dashes (cleaned automatically)
-    ///
-    /// # Errors
-    /// - `RecoveryError::InvalidLength` if not exactly 64 hex characters
-    /// - `RecoveryError::InvalidHex` if contains non-hex characters
-    ///
-    /// # Example
-    /// ```
-    /// use syft_crypto_protocol::RecoveryKey;
-    ///
-    /// // With dashes
-    /// let key1 = RecoveryKey::from_hex_string("a3f5-e8c9-1234-5678-9abc-def0-1234-5678-9abc-def0-1234-5678-9abc-def0-1234-5678").unwrap();
-    ///
-    /// // Without dashes
-    /// let key2 = RecoveryKey::from_hex_string("a3f5e8c9123456789abcdef0123456789abcdef0123456789abcdef012345678").unwrap();
-    /// ```
+    /// Accepts 64 hex characters in any format (dashes and spaces are ignored).
     pub fn from_hex_string(s: &str) -> RecoveryResult<Self> {
         // Remove readability separators while rejecting unexpected characters.
         let mut cleaned = String::with_capacity(64);
@@ -160,5 +102,167 @@ impl RecoveryKey {
     #[allow(dead_code)] // Used in upcoming key-derivation logic
     pub(crate) fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+}
+
+/// Container for all private key material needed for PQXDH.
+///
+/// Bundles identity key pair (Ed25519), signed prekey pair (X25519), and PQ prekey pair (Kyber1024).
+pub struct SyftPrivateKeys {
+    /// Ed25519 identity key pair for signing (wrapped to ensure zeroization).
+    identity: Sensitive<IdentityKeyPair>,
+    /// X25519 signed prekey pair for ECDH (wrapped to ensure zeroization).
+    signed_pre_key: Sensitive<KeyPair>,
+    /// Kyber1024 PQ signed prekey for KEM (wrapped to ensure zeroization).
+    pq_signed_pre_key: Sensitive<kem::KeyPair>,
+}
+
+impl SyftPrivateKeys {
+    // pub fn from_recovery_key(recovery_key: &SyftRecoveryKey) -> Result<Self> {
+    //     // Derive seed material with HKDF
+    //     // Create KeyPair and kem::KeyPair from seeds
+    //     unimplemented!()
+    // }
+
+    /// Create a new container for private key material.
+    pub fn new(
+        identity: IdentityKeyPair,
+        signed_pre_key: KeyPair,
+        pq_signed_pre_key: kem::KeyPair,
+    ) -> Self {
+        Self {
+            identity: Sensitive::new(identity),
+            signed_pre_key: Sensitive::new(signed_pre_key),
+            pq_signed_pre_key: Sensitive::new(pq_signed_pre_key),
+        }
+    }
+
+    /// Borrow the identity key pair.
+    pub fn identity(&self) -> &IdentityKeyPair {
+        &self.identity
+    }
+
+    /// Borrow the signed prekey pair.
+    pub fn signed_pre_key(&self) -> &KeyPair {
+        &self.signed_pre_key
+    }
+
+    /// Borrow the PQ signed prekey pair.
+    pub fn pq_signed_pre_key(&self) -> &kem::KeyPair {
+        &self.pq_signed_pre_key
+    }
+
+    /// Create public key bundle with all public keys and signatures.
+    pub fn to_public_bundle<R: rand::CryptoRng + rand::Rng>(
+        &self,
+        rng: &mut R,
+    ) -> Result<SyftPublicKeyBundle, libsignal_protocol::SignalProtocolError> {
+        SyftPublicKeyBundle::new(
+            self.identity(),
+            self.signed_pre_key(),
+            self.pq_signed_pre_key(),
+            rng,
+        )
+    }
+}
+
+/// Wrapper that zeroizes contained data immediately after it has been dropped.
+struct Sensitive<T>(ManuallyDrop<T>);
+
+impl<T> Sensitive<T> {
+    fn new(value: T) -> Self {
+        Self(ManuallyDrop::new(value))
+    }
+}
+
+impl<T> Deref for Sensitive<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for Sensitive<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T> Drop for Sensitive<T> {
+    fn drop(&mut self) {
+        unsafe {
+            // Drop the inner value first so any heap allocations are freed.
+            ManuallyDrop::drop(&mut self.0);
+            // Then zeroize the now-dropped memory to clear residual key material.
+            let ptr = (&mut self.0 as *mut ManuallyDrop<T>).cast::<u8>();
+            std::ptr::write_bytes(ptr, 0, std::mem::size_of::<T>());
+        }
+    }
+}
+
+/// Bundle of public keys for publishing in DID documents.
+///
+/// Contains identity key and signed prekeys that can be fetched by message senders.
+#[derive(Clone)]
+pub struct SyftPublicKeyBundle {
+    pub identity_key: IdentityKey,
+    pub signed_pre_key: PublicKey,
+    pub signed_pre_key_signature: Box<[u8]>,
+    pub pq_pre_key: kem::PublicKey,
+    pub pq_pre_key_signature: Box<[u8]>,
+}
+
+impl SyftPublicKeyBundle {
+    /// Create a new public key bundle from an identity key pair and prekey pairs.
+    ///
+    /// This will sign both prekeys with the identity private key.
+    pub fn new<R: rand::CryptoRng + rand::Rng>(
+        identity_key_pair: &IdentityKeyPair,
+        signed_pre_key_pair: &KeyPair,
+        pq_pre_key_pair: &kem::KeyPair,
+        rng: &mut R,
+    ) -> Result<Self, libsignal_protocol::SignalProtocolError> {
+        // Sign the EC prekey
+        let signed_pre_key_signature = identity_key_pair
+            .private_key()
+            .calculate_signature(&signed_pre_key_pair.public_key.serialize(), rng)?;
+
+        // Sign the PQ prekey
+        let pq_pre_key_signature = identity_key_pair
+            .private_key()
+            .calculate_signature(&pq_pre_key_pair.public_key.serialize(), rng)?;
+
+        Ok(Self {
+            identity_key: *identity_key_pair.identity_key(),
+            signed_pre_key: signed_pre_key_pair.public_key,
+            signed_pre_key_signature,
+            pq_pre_key: pq_pre_key_pair.public_key.clone(),
+            pq_pre_key_signature,
+        })
+    }
+
+    /// Verify both signatures in the bundle.
+    pub fn verify_signatures(&self) -> bool {
+        let ec_sig_valid = self.identity_key.public_key().verify_signature(
+            &self.signed_pre_key.serialize(),
+            &self.signed_pre_key_signature,
+        );
+
+        let pq_sig_valid = self
+            .identity_key
+            .public_key()
+            .verify_signature(&self.pq_pre_key.serialize(), &self.pq_pre_key_signature);
+
+        ec_sig_valid && pq_sig_valid
+    }
+
+    /// Get the total size of the bundle in bytes.
+    pub fn total_size(&self) -> usize {
+        self.identity_key.serialize().len()
+            + self.signed_pre_key.serialize().len()
+            + self.signed_pre_key_signature.len()
+            + self.pq_pre_key.serialize().len()
+            + self.pq_pre_key_signature.len()
     }
 }

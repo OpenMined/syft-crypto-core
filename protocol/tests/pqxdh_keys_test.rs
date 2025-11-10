@@ -5,7 +5,7 @@
 
 use libsignal_protocol::*;
 use rand::SeedableRng;
-use syft_crypto_protocol::PublicKeyBundle;
+use syft_crypto_protocol::SyftPublicKeyBundle;
 
 /// Test 1: Generate the 3 keys required for PQXDH
 ///
@@ -223,7 +223,7 @@ fn test_key_bundle_serialization() -> Result<(), SignalProtocolError> {
 
     // Create PublicKeyBundle (automatically signs both prekeys)
     println!("\n📝 Creating PublicKeyBundle...");
-    let bundle = PublicKeyBundle::new(
+    let bundle = SyftPublicKeyBundle::new(
         &identity_key_pair,
         &signed_prekey_pair,
         &pq_prekey_pair,
