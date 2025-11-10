@@ -125,14 +125,13 @@ impl SyftRecoveryKey {
 /// Container for all private key material needed for PQXDH.
 ///
 /// Bundles identity key pair (Ed25519), signed prekey pair (X25519), and PQ prekey pair (Kyber1024).
-#[allow(private_interfaces)]
 pub struct SyftPrivateKeys {
     /// Ed25519 identity key pair for signing (wrapped to ensure zeroization).
-    pub signal_identity_key_pair: Sensitive<IdentityKeyPair>,
+    signal_identity_key_pair: Sensitive<IdentityKeyPair>,
     /// X25519 signed prekey pair for ECDH (wrapped to ensure zeroization).
-    pub signal_signed_pre_key_pair: Sensitive<KeyPair>,
+    signal_signed_pre_key_pair: Sensitive<KeyPair>,
     /// Kyber1024 PQ signed prekey for KEM (wrapped to ensure zeroization).
-    pub signal_pq_signed_pre_key_pair: Sensitive<kem::KeyPair>,
+    signal_pq_signed_pre_key_pair: Sensitive<kem::KeyPair>,
 }
 
 impl SyftPrivateKeys {
