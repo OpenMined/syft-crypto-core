@@ -1,11 +1,14 @@
-//! Key structures for PQXDH protocol
+//! Key structures for SyftBox PQXDH protocol
 //!
-//! This module defines the key types used in the PQXDH protocol:
-//! - RecoveryKey: 32-byte master secret for deterministic key derivation
-//! - IdentityKeyPair: Ed25519 keypair for signing (wraps libsignal)
-//! - SignedPreKey: X25519 keypair for ECDH (wraps libsignal)
-//! - PQSignedPreKey: Kyber1024 keypair for post-quantum KEM (wraps libsignal)
-//! - PrivateKeys: Container for all private key material
+//! This module defines the key types used in the SyftBox PQXDH protocol:
+//! - SyftRecoveryKey: 32-byte master secret for deterministic key derivation
+//! - SyftPrivateKeys: Container for all private key material
+//! - SyftPublicKeyBundle: Container for all public keys and signatures
+//!
+//! The Syft keys wrap libsignal_protocol keys:
+//! - IdentityKeyPair: Ed25519 keypair for signing
+//! - SignedPreKey: X25519 keypair for ECDH
+//! - PQSignedPreKey: Kyber1024 keypair for post-quantum KEM
 
 use crate::error::{RecoveryError, RecoveryResult};
 use libsignal_protocol::{IdentityKey, IdentityKeyPair, KeyPair, PublicKey, kem};
@@ -18,9 +21,23 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 ///
 /// This is the MASTER secret that can regenerate all private keys.
 /// Users must write down the 64-character hex representation for backup.
-#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct SyftRecoveryKey([u8; 32]);
+
+impl std::fmt::Debug for SyftRecoveryKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyftRecoveryKey")
+            .field(
+                "first_4_bytes",
+                &format!(
+                    "{:02x}{:02x}{:02x}{:02x}",
+                    self.0[0], self.0[1], self.0[2], self.0[3]
+                ),
+            )
+            .field("remaining", &"<redacted 28 bytes>")
+            .finish()
+    }
+}
 
 impl SyftRecoveryKey {
     /// Generate a new random recovery key with 256 bits of entropy.
@@ -108,22 +125,17 @@ impl SyftRecoveryKey {
 /// Container for all private key material needed for PQXDH.
 ///
 /// Bundles identity key pair (Ed25519), signed prekey pair (X25519), and PQ prekey pair (Kyber1024).
+#[allow(private_interfaces)]
 pub struct SyftPrivateKeys {
     /// Ed25519 identity key pair for signing (wrapped to ensure zeroization).
-    identity: Sensitive<IdentityKeyPair>,
+    pub signal_identity_key_pair: Sensitive<IdentityKeyPair>,
     /// X25519 signed prekey pair for ECDH (wrapped to ensure zeroization).
-    signed_pre_key: Sensitive<KeyPair>,
+    pub signal_signed_pre_key_pair: Sensitive<KeyPair>,
     /// Kyber1024 PQ signed prekey for KEM (wrapped to ensure zeroization).
-    pq_signed_pre_key: Sensitive<kem::KeyPair>,
+    pub signal_pq_signed_pre_key_pair: Sensitive<kem::KeyPair>,
 }
 
 impl SyftPrivateKeys {
-    // pub fn from_recovery_key(recovery_key: &SyftRecoveryKey) -> Result<Self> {
-    //     // Derive seed material with HKDF
-    //     // Create KeyPair and kem::KeyPair from seeds
-    //     unimplemented!()
-    // }
-
     /// Create a new container for private key material.
     pub fn new(
         identity: IdentityKeyPair,
@@ -131,25 +143,25 @@ impl SyftPrivateKeys {
         pq_signed_pre_key: kem::KeyPair,
     ) -> Self {
         Self {
-            identity: Sensitive::new(identity),
-            signed_pre_key: Sensitive::new(signed_pre_key),
-            pq_signed_pre_key: Sensitive::new(pq_signed_pre_key),
+            signal_identity_key_pair: Sensitive::new(identity),
+            signal_signed_pre_key_pair: Sensitive::new(signed_pre_key),
+            signal_pq_signed_pre_key_pair: Sensitive::new(pq_signed_pre_key),
         }
     }
 
     /// Borrow the identity key pair.
     pub fn identity(&self) -> &IdentityKeyPair {
-        &self.identity
+        &self.signal_identity_key_pair
     }
 
     /// Borrow the signed prekey pair.
     pub fn signed_pre_key(&self) -> &KeyPair {
-        &self.signed_pre_key
+        &self.signal_signed_pre_key_pair
     }
 
     /// Borrow the PQ signed prekey pair.
     pub fn pq_signed_pre_key(&self) -> &kem::KeyPair {
-        &self.pq_signed_pre_key
+        &self.signal_pq_signed_pre_key_pair
     }
 
     /// Create public key bundle with all public keys and signatures.
@@ -201,15 +213,13 @@ impl<T> Drop for Sensitive<T> {
     }
 }
 
-/// Bundle of public keys for publishing in DID documents.
-///
-/// Contains identity key and signed prekeys that can be fetched by message senders.
+/// Bundle of public keys and signatures for publishing in DID documents.
 #[derive(Clone)]
 pub struct SyftPublicKeyBundle {
-    pub identity_key: IdentityKey,
-    pub signed_pre_key: PublicKey,
+    pub identity_public_key: IdentityKey,
+    pub signed_public_pre_key: PublicKey,
     pub signed_pre_key_signature: Box<[u8]>,
-    pub pq_pre_key: kem::PublicKey,
+    pub pq_public_pre_key: kem::PublicKey,
     pub pq_pre_key_signature: Box<[u8]>,
 }
 
@@ -234,35 +244,35 @@ impl SyftPublicKeyBundle {
             .calculate_signature(&pq_pre_key_pair.public_key.serialize(), rng)?;
 
         Ok(Self {
-            identity_key: *identity_key_pair.identity_key(),
-            signed_pre_key: signed_pre_key_pair.public_key,
+            identity_public_key: *identity_key_pair.identity_key(),
+            signed_public_pre_key: signed_pre_key_pair.public_key,
             signed_pre_key_signature,
-            pq_pre_key: pq_pre_key_pair.public_key.clone(),
+            pq_public_pre_key: pq_pre_key_pair.public_key.clone(),
             pq_pre_key_signature,
         })
     }
 
     /// Verify both signatures in the bundle.
     pub fn verify_signatures(&self) -> bool {
-        let ec_sig_valid = self.identity_key.public_key().verify_signature(
-            &self.signed_pre_key.serialize(),
+        let ec_sig_valid = self.identity_public_key.public_key().verify_signature(
+            &self.signed_public_pre_key.serialize(),
             &self.signed_pre_key_signature,
         );
 
-        let pq_sig_valid = self
-            .identity_key
-            .public_key()
-            .verify_signature(&self.pq_pre_key.serialize(), &self.pq_pre_key_signature);
+        let pq_sig_valid = self.identity_public_key.public_key().verify_signature(
+            &self.pq_public_pre_key.serialize(),
+            &self.pq_pre_key_signature,
+        );
 
         ec_sig_valid && pq_sig_valid
     }
 
     /// Get the total size of the bundle in bytes.
     pub fn total_size(&self) -> usize {
-        self.identity_key.serialize().len()
-            + self.signed_pre_key.serialize().len()
+        self.identity_public_key.serialize().len()
+            + self.signed_public_pre_key.serialize().len()
             + self.signed_pre_key_signature.len()
-            + self.pq_pre_key.serialize().len()
+            + self.pq_public_pre_key.serialize().len()
             + self.pq_pre_key_signature.len()
     }
 }

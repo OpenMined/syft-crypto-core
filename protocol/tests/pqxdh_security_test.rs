@@ -133,10 +133,10 @@ fn test_reject_wrong_identity_key_signature() {
     // Create bundle with Alice's keys but Bob's signatures
     println!("\n📦 Creating malicious bundle (Alice's keys + Bob's signatures)...");
     let malicious_bundle = SyftPublicKeyBundle {
-        identity_key: *bob_identity.identity_key(), // Bob's identity
-        signed_pre_key: alice_signed_prekey.public_key,
+        identity_public_key: *bob_identity.identity_key(), // Bob's identity
+        signed_public_pre_key: alice_signed_prekey.public_key,
         signed_pre_key_signature: fake_ec_sig,
-        pq_pre_key: alice_pq_prekey.public_key.clone(),
+        pq_public_pre_key: alice_pq_prekey.public_key.clone(),
         pq_pre_key_signature: fake_pq_sig,
     };
 
@@ -151,15 +151,14 @@ fn test_reject_wrong_identity_key_signature() {
     // However, the identity key doesn't match Alice's
     println!("\n🔍 Checking if identity matches Alice's...");
     assert_ne!(
-        malicious_bundle.identity_key.serialize(),
+        malicious_bundle.identity_public_key.serialize(),
         alice_identity.identity_key().serialize(),
         "Identity keys should NOT match"
     );
     println!("✅ Identity key mismatch detected!");
     println!("   This bundle claims to be from Bob, not Alice");
 
-    println!("\n💡 Security Lesson:");
-    println!("   When receiving a bundle, you must:");
+    println!("   When receiving a bundle, we must:");
     println!("   1. Verify signatures ✓");
     println!("   2. Verify identity key matches expected sender ✓");
     println!("   3. Check identity key against trusted source (DID document) ✓");
@@ -197,10 +196,10 @@ fn test_reject_swapped_prekeys() {
     // Create malicious bundle: signatures from bundle 1, but keys from set 2
     println!("\n🔧 Creating malicious bundle (signatures for set 1, but keys from set 2)...");
     let malicious_bundle = SyftPublicKeyBundle {
-        identity_key: bundle_1.identity_key,
-        signed_pre_key: signed_prekey_2.public_key, // Swapped!
+        identity_public_key: bundle_1.identity_public_key,
+        signed_public_pre_key: signed_prekey_2.public_key, // Swapped!
         signed_pre_key_signature: bundle_1.signed_pre_key_signature.clone(),
-        pq_pre_key: pq_prekey_2.public_key.clone(), // Swapped!
+        pq_public_pre_key: pq_prekey_2.public_key.clone(), // Swapped!
         pq_pre_key_signature: bundle_1.pq_pre_key_signature.clone(),
     };
 
@@ -266,10 +265,10 @@ fn test_reject_zero_signature() {
     .unwrap();
 
     let bundle2 = SyftPublicKeyBundle {
-        identity_key: valid_bundle.identity_key,
-        signed_pre_key: valid_bundle.signed_pre_key,
+        identity_public_key: valid_bundle.identity_public_key,
+        signed_public_pre_key: valid_bundle.signed_public_pre_key,
         signed_pre_key_signature: valid_bundle.signed_pre_key_signature,
-        pq_pre_key: valid_bundle.pq_pre_key,
+        pq_public_pre_key: valid_bundle.pq_public_pre_key,
         pq_pre_key_signature: vec![0u8; 64].into_boxed_slice(),
     };
 
@@ -332,11 +331,11 @@ fn test_bundle_size_reasonable() {
     println!("\n📊 Component sizes:");
     println!(
         "   Identity key:    {} bytes",
-        bundle.identity_key.serialize().len()
+        bundle.identity_public_key.serialize().len()
     );
     println!(
         "   Signed prekey:   {} bytes",
-        bundle.signed_pre_key.serialize().len()
+        bundle.signed_public_pre_key.serialize().len()
     );
     println!(
         "   SPK signature:   {} bytes",
@@ -344,7 +343,7 @@ fn test_bundle_size_reasonable() {
     );
     println!(
         "   PQ prekey:       {} bytes",
-        bundle.pq_pre_key.serialize().len()
+        bundle.pq_public_pre_key.serialize().len()
     );
     println!(
         "   PQSPK signature: {} bytes",

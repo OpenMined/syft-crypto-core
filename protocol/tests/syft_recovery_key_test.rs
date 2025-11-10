@@ -169,6 +169,63 @@ fn test_recovery_key_rejects_low_entropy_imports() {
 }
 
 #[test]
+fn test_recovery_key_invalid_length_too_long() {
+    let too_long = "a".repeat(66); // 66 hex chars instead of 64
+    let result = SyftRecoveryKey::from_hex_string(&too_long);
+
+    println!("\n=== Invalid Length (Too Long) Test ===");
+    println!("Input length: {} (expected 64)", too_long.len());
+
+    let err = match result {
+        Ok(_) => panic!("expected error for too long input"),
+        Err(err) => err,
+    };
+    println!("Error: {}", err);
+
+    match err {
+        RecoveryError::InvalidLength { expected, actual } => {
+            println!("Expected length: {}", expected);
+            println!("Actual length:   {}", actual);
+            assert_eq!(expected, 64);
+            assert_eq!(actual, 66);
+        }
+        _ => panic!("Expected InvalidLength error"),
+    }
+}
+
+#[test]
+fn test_recovery_key_case_insensitive() {
+    let key = SyftRecoveryKey::generate();
+    let hex_string = key.to_hex_string();
+
+    println!("\n=== Case Insensitive Parsing Test ===");
+    println!("Original:  {}", hex_string);
+
+    // Convert to uppercase
+    let uppercase = hex_string.to_uppercase();
+    println!("Uppercase: {}", uppercase);
+    let recovered_upper =
+        SyftRecoveryKey::from_hex_string(&uppercase).expect("Should parse uppercase hex");
+
+    // Convert to lowercase
+    let lowercase = hex_string.to_lowercase();
+    println!("Lowercase: {}", lowercase);
+    let recovered_lower =
+        SyftRecoveryKey::from_hex_string(&lowercase).expect("Should parse lowercase hex");
+
+    // Both should produce the same key
+    assert_eq!(
+        recovered_upper.to_hex_string(),
+        recovered_lower.to_hex_string(),
+        "Case should not matter for hex parsing"
+    );
+
+    // Both should match the original
+    assert_eq!(key, recovered_upper, "Uppercase parsing should match");
+    assert_eq!(key, recovered_lower, "Lowercase parsing should match");
+}
+
+#[test]
 fn test_recovery_key_concurrent_generation() {
     let handles: Vec<_> = (0..32)
         .map(|_| thread::spawn(SyftRecoveryKey::generate))
