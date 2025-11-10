@@ -137,31 +137,28 @@ impl SyftRecoveryKey {
 
         let recovery_key_bytes = self.as_bytes();
 
+        // HKDF instance for all key derivations
+        let hk = Hkdf::<Sha256>::new(None, recovery_key_bytes);
+
         // 1. Derive identity key pair (Ed25519)
-        let hk_identity = Hkdf::<Sha256>::new(None, recovery_key_bytes);
         let mut identity_seed = [0u8; 32];
-        hk_identity
-            .expand(b"SyftBox_Identity_Key_v1", &mut identity_seed)
+        hk.expand(b"SyftBox_Identity_Key_v1", &mut identity_seed)
             .map_err(|_| RecoveryError::DerivationFailed)?;
 
         let mut identity_rng = rand::rngs::StdRng::from_seed(identity_seed);
         let signal_identity_key_pair = IdentityKeyPair::generate(&mut identity_rng);
 
         // 2. Derive signed prekey (X25519)
-        let hk_spk = Hkdf::<Sha256>::new(None, recovery_key_bytes);
         let mut spk_seed = [0u8; 32];
-        hk_spk
-            .expand(b"SyftBox_Signed_Prekey_v1", &mut spk_seed)
+        hk.expand(b"SyftBox_Signed_Prekey_v1", &mut spk_seed)
             .map_err(|_| RecoveryError::DerivationFailed)?;
 
         let mut spk_rng = rand::rngs::StdRng::from_seed(spk_seed);
         let signal_signed_pre_key_pair = KeyPair::generate(&mut spk_rng);
 
         // 3. Derive PQ prekey (Kyber1024)
-        let hk_pqspk = Hkdf::<Sha256>::new(None, recovery_key_bytes);
         let mut pqspk_seed = [0u8; 32];
-        hk_pqspk
-            .expand(b"SyftBox_PQ_Prekey_v1", &mut pqspk_seed)
+        hk.expand(b"SyftBox_PQ_Prekey_v1", &mut pqspk_seed)
             .map_err(|_| RecoveryError::DerivationFailed)?;
 
         let mut pqspk_rng = rand::rngs::StdRng::from_seed(pqspk_seed);
