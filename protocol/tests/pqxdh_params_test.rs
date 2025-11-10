@@ -254,17 +254,18 @@ fn test_bundle_signature_verification() {
     // Test: Manually verify EC signature
     println!("\n🔍 Manually verifying EC signature...");
     let ec_sig_ok = identity_key_pair.public_key().verify_signature(
-        &bundle.signed_pre_key.serialize(),
-        &bundle.signed_pre_key_signature,
+        &bundle.signal_signed_public_pre_key.serialize(),
+        &bundle.signal_signed_pre_key_signature,
     );
     assert!(ec_sig_ok, "EC signature should be valid");
     println!("   ✅ EC signature manually verified");
 
     // Test: Manually verify PQ signature
     println!("\n🔍 Manually verifying PQ signature...");
-    let pq_sig_ok = identity_key_pair
-        .public_key()
-        .verify_signature(&bundle.pq_pre_key.serialize(), &bundle.pq_pre_key_signature);
+    let pq_sig_ok = identity_key_pair.public_key().verify_signature(
+        &bundle.signal_pq_public_pre_key.serialize(),
+        &bundle.signal_pq_pre_key_signature,
+    );
     assert!(pq_sig_ok, "PQ signature should be valid");
     println!("   ✅ PQ signature manually verified");
 
@@ -297,7 +298,7 @@ fn test_bundle_with_wrong_signature() {
 
     // Corrupt the EC signature
     println!("\n🔧 Corrupting EC signature...");
-    bundle.signed_pre_key_signature[0] ^= 0xFF;
+    bundle.signal_signed_pre_key_signature[0] ^= 0xFF;
 
     println!("🔍 Verifying corrupted bundle...");
     assert!(

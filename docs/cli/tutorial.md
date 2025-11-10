@@ -179,18 +179,18 @@ The decrypted plaintext resides at `sandbox/bob/unencrypted/bob@example.org/shar
 
 ## Verify Artefacts
 
-- Private keys:  
-  `sandbox/alice/.syc/keys/alice@example.org.key`  
+- Private keys:
+  `sandbox/alice/.syc/keys/alice@example.org.key`
   `sandbox/bob/.syc/keys/bob@example.org.key`
 
-- Public bundles:  
-  `sandbox/alice/datasites/alice@example.org/public/crypto/did.json`  
+- Public bundles:
+  `sandbox/alice/datasites/alice@example.org/public/crypto/did.json`
   `sandbox/bob/datasites/bob@example.org/public/crypto/did.json`
 
-- Ciphertext envelope:  
+- Ciphertext envelope:
   `sandbox/bob/datasites/bob@example.org/shared/alice@example.org/files/message.txt`
 
-- Decrypted plaintext:  
+- Decrypted plaintext:
   `sandbox/bob/unencrypted/bob@example.org/shared/alice@example.org/files/message.txt`
 
 Repeat the same steps for other identities or add additional plaintext files under the corresponding `unencrypted/<identity>/shared/...` folders.***

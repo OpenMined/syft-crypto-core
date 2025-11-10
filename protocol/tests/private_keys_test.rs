@@ -53,10 +53,13 @@ fn test_to_public_bundle_respects_supplied_rng() {
     assert!(bundle2.verify_signatures());
     // Identical RNG seeds should produce identical deterministic signatures
     assert_eq!(
-        bundle1.signed_pre_key_signature.as_ref(),
-        bundle2.signed_pre_key_signature.as_ref()
+        bundle1.signal_signed_pre_key_signature.as_ref(),
+        bundle2.signal_signed_pre_key_signature.as_ref()
     );
-    assert_eq!(bundle1.pq_pre_key_signature, bundle2.pq_pre_key_signature);
+    assert_eq!(
+        bundle1.signal_pq_pre_key_signature,
+        bundle2.signal_pq_pre_key_signature
+    );
 
     // Different RNG seeds must produce different signatures
     let mut rng3 = StdRng::from_seed([9u8; 32]);
@@ -64,12 +67,12 @@ fn test_to_public_bundle_respects_supplied_rng() {
         .to_public_bundle(&mut rng3)
         .expect("bundle creation succeeds");
     assert_ne!(
-        bundle1.signed_pre_key_signature.as_ref(),
-        bundle3.signed_pre_key_signature.as_ref()
+        bundle1.signal_signed_pre_key_signature.as_ref(),
+        bundle3.signal_signed_pre_key_signature.as_ref()
     );
     assert_ne!(
-        bundle1.pq_pre_key_signature.as_ref(),
-        bundle3.pq_pre_key_signature.as_ref()
+        bundle1.signal_pq_pre_key_signature.as_ref(),
+        bundle3.signal_pq_pre_key_signature.as_ref()
     );
 }
 
