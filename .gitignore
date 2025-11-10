@@ -3,6 +3,7 @@
 # ai
 .claude.json
 .claude/
+CLAUDE.md
 
 # macos
 .DS_Store
