@@ -1,4 +1,5 @@
 use syft_crypto_protocol::SyftRecoveryKey;
+use syft_crypto_protocol::did_utils::generate_did_web_id;
 use syft_crypto_protocol::serialization::{
     deserialize_from_did_document, deserialize_private_keys, serialize_private_keys,
     serialize_to_did_document,
@@ -10,9 +11,11 @@ fn test_did_document_roundtrip() {
     let private_keys = recovery_key.derive_keys().unwrap();
     let original_bundle = private_keys.to_public_bundle(&mut rand::rng()).unwrap();
 
+    // Generate DID using utility function
+    let did_id = generate_did_web_id("alice@example.com", "example.com");
+
     // Serialize
-    let did_doc = serialize_to_did_document(&original_bundle, "did:web:example.com:alice")
-        .expect("Should serialize");
+    let did_doc = serialize_to_did_document(&original_bundle, &did_id).expect("Should serialize");
 
     // Deserialize
     let restored_bundle = deserialize_from_did_document(&did_doc).expect("Should deserialize");
@@ -80,11 +83,14 @@ fn test_did_document_format() {
     let private_keys = recovery_key.derive_keys().unwrap();
     let bundle = private_keys.to_public_bundle(&mut rand::rng()).unwrap();
 
-    let did_doc = serialize_to_did_document(&bundle, "did:web:example.com:alice").unwrap();
+    // Generate DID using utility function
+    let did_id = generate_did_web_id("alice@example.com", "example.com");
+
+    let did_doc = serialize_to_did_document(&bundle, &did_id).unwrap();
 
     // Verify structure
     assert!(did_doc["@context"].is_array());
-    assert_eq!(did_doc["id"], "did:web:example.com:alice");
+    assert_eq!(did_doc["id"], did_id);
     assert!(did_doc["verificationMethod"].is_array());
     assert!(did_doc["keyAgreement"].is_array());
 
