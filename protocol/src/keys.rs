@@ -10,13 +10,16 @@
 use crate::error::{RecoveryError, RecoveryResult};
 use libsignal_protocol::{IdentityKey, IdentityKeyPair, KeyPair, PublicKey, kem};
 use rand::RngCore;
+use std::mem::ManuallyDrop;
+use std::ops::{Deref, DerefMut};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// 32-byte recovery key that deterministically derives all private keys.
 ///
 /// This is the MASTER secret that can regenerate all private keys.
 /// Users must write down the 64-character hex representation for backup.
-#[derive(Clone, Debug, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct SyftRecoveryKey([u8; 32]);
 
 impl SyftRecoveryKey {
@@ -106,12 +109,12 @@ impl SyftRecoveryKey {
 ///
 /// Bundles identity key pair (Ed25519), signed prekey pair (X25519), and PQ prekey pair (Kyber1024).
 pub struct SyftPrivateKeys {
-    /// Ed25519 identity key pair for signing
-    pub identity: IdentityKeyPair,
-    /// X25519 signed prekey pair for ECDH
-    pub signed_pre_key: KeyPair,
-    /// Kyber1024 PQ signed prekey for KEM
-    pub pq_signed_pre_key: kem::KeyPair,
+    /// Ed25519 identity key pair for signing (wrapped to ensure zeroization).
+    identity: Sensitive<IdentityKeyPair>,
+    /// X25519 signed prekey pair for ECDH (wrapped to ensure zeroization).
+    signed_pre_key: Sensitive<KeyPair>,
+    /// Kyber1024 PQ signed prekey for KEM (wrapped to ensure zeroization).
+    pq_signed_pre_key: Sensitive<kem::KeyPair>,
 }
 
 impl SyftPrivateKeys {
@@ -121,15 +124,80 @@ impl SyftPrivateKeys {
     //     unimplemented!()
     // }
 
+    /// Create a new container for private key material.
+    pub fn new(
+        identity: IdentityKeyPair,
+        signed_pre_key: KeyPair,
+        pq_signed_pre_key: kem::KeyPair,
+    ) -> Self {
+        Self {
+            identity: Sensitive::new(identity),
+            signed_pre_key: Sensitive::new(signed_pre_key),
+            pq_signed_pre_key: Sensitive::new(pq_signed_pre_key),
+        }
+    }
+
+    /// Borrow the identity key pair.
+    pub fn identity(&self) -> &IdentityKeyPair {
+        &self.identity
+    }
+
+    /// Borrow the signed prekey pair.
+    pub fn signed_pre_key(&self) -> &KeyPair {
+        &self.signed_pre_key
+    }
+
+    /// Borrow the PQ signed prekey pair.
+    pub fn pq_signed_pre_key(&self) -> &kem::KeyPair {
+        &self.pq_signed_pre_key
+    }
+
     /// Create public key bundle with all public keys and signatures.
-    pub fn to_public_bundle(&self) -> SyftPublicKeyBundle {
+    pub fn to_public_bundle<R: rand::CryptoRng + rand::Rng>(
+        &self,
+        rng: &mut R,
+    ) -> Result<SyftPublicKeyBundle, libsignal_protocol::SignalProtocolError> {
         SyftPublicKeyBundle::new(
-            &self.identity,
-            &self.signed_pre_key,
-            &self.pq_signed_pre_key,
-            &mut rand::rng(),
+            self.identity(),
+            self.signed_pre_key(),
+            self.pq_signed_pre_key(),
+            rng,
         )
-        .expect("signing should never fail with valid keys")
+    }
+}
+
+/// Wrapper that zeroizes contained data immediately after it has been dropped.
+struct Sensitive<T>(ManuallyDrop<T>);
+
+impl<T> Sensitive<T> {
+    fn new(value: T) -> Self {
+        Self(ManuallyDrop::new(value))
+    }
+}
+
+impl<T> Deref for Sensitive<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for Sensitive<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T> Drop for Sensitive<T> {
+    fn drop(&mut self) {
+        unsafe {
+            // Drop the inner value first so any heap allocations are freed.
+            ManuallyDrop::drop(&mut self.0);
+            // Then zeroize the now-dropped memory to clear residual key material.
+            let ptr = (&mut self.0 as *mut ManuallyDrop<T>).cast::<u8>();
+            std::ptr::write_bytes(ptr, 0, std::mem::size_of::<T>());
+        }
     }
 }
 
