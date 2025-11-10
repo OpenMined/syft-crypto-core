@@ -99,6 +99,53 @@ impl SyftRecoveryKey {
         Ok(Self(key))
     }
 
+    /// Convert recovery key to a BIP39 mnemonic phrase (24 words).
+    pub fn to_mnemonic(&self) -> String {
+        use bip39::{Language, Mnemonic};
+
+        // BIP39 with 32 bytes = 24 words (256 bits entropy)
+        let mnemonic = Mnemonic::from_entropy_in(Language::English, &self.0)
+            .expect("32 bytes should always create valid mnemonic");
+
+        mnemonic.to_string()
+    }
+
+    /// Parse a BIP39 mnemonic phrase back into a recovery key.
+    pub fn from_mnemonic(phrase: &str) -> RecoveryResult<Self> {
+        use bip39::{Language, Mnemonic};
+
+        // Normalize to lowercase and clean whitespace for BIP39 library
+        let normalized = phrase
+            .split_whitespace()
+            .map(|word| word.to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // Parse mnemonic
+        let mnemonic = Mnemonic::parse_in(Language::English, &normalized)
+            .map_err(|e| RecoveryError::MnemonicError(e.to_string()))?;
+
+        // Get the entropy (should be 32 bytes for 24-word mnemonic)
+        let entropy = mnemonic.to_entropy();
+
+        if entropy.len() != 32 {
+            return Err(RecoveryError::InvalidLength {
+                expected: 32,
+                actual: entropy.len(),
+            });
+        }
+
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&entropy);
+
+        // Verify minimum entropy
+        if !Self::has_min_entropy(&key) {
+            return Err(RecoveryError::InsufficientEntropy);
+        }
+
+        Ok(Self(key))
+    }
+
     fn has_min_entropy(bytes: &[u8; 32]) -> bool {
         if bytes.iter().all(|&b| b == 0) {
             return false;

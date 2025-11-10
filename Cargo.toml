@@ -46,6 +46,7 @@ base64 = "0.22"
 urlencoding = "2.1"
 zeroize = { version = "1.8.2", features = ["derive"] }
 thiserror = "2.0.17"
+bip39 = "2.1"
 
 # CLI dependencies
 clap = { version = "4", features = ["derive"] }
