@@ -116,9 +116,63 @@ impl SyftRecoveryKey {
     /// # Security
     /// This should only be used internally for key derivation.
     /// Never expose these bytes to external APIs.
-    #[allow(dead_code)] // Used in upcoming key-derivation logic
     pub(crate) fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    /// Derive all private keys from this recovery key using HKDF-SHA256.
+    ///
+    /// This is deterministic - the same recovery key will always produce the same keys.
+    ///
+    /// # Example
+    /// ```
+    /// use syft_crypto_protocol::SyftRecoveryKey;
+    /// let recovery_key = SyftRecoveryKey::generate();
+    /// let private_keys = recovery_key.derive_keys().expect("derivation should succeed");
+    /// ```
+    pub fn derive_keys(&self) -> RecoveryResult<SyftPrivateKeys> {
+        use hkdf::Hkdf;
+        use rand::SeedableRng;
+        use sha2::Sha256;
+
+        let recovery_key_bytes = self.as_bytes();
+
+        // 1. Derive identity key pair (Ed25519)
+        let hk_identity = Hkdf::<Sha256>::new(None, recovery_key_bytes);
+        let mut identity_seed = [0u8; 32];
+        hk_identity
+            .expand(b"SyftBox_Identity_Key_v1", &mut identity_seed)
+            .map_err(|_| RecoveryError::DerivationFailed)?;
+
+        let mut identity_rng = rand::rngs::StdRng::from_seed(identity_seed);
+        let signal_identity_key_pair = IdentityKeyPair::generate(&mut identity_rng);
+
+        // 2. Derive signed prekey (X25519)
+        let hk_spk = Hkdf::<Sha256>::new(None, recovery_key_bytes);
+        let mut spk_seed = [0u8; 32];
+        hk_spk
+            .expand(b"SyftBox_Signed_Prekey_v1", &mut spk_seed)
+            .map_err(|_| RecoveryError::DerivationFailed)?;
+
+        let mut spk_rng = rand::rngs::StdRng::from_seed(spk_seed);
+        let signal_signed_pre_key_pair = KeyPair::generate(&mut spk_rng);
+
+        // 3. Derive PQ prekey (Kyber1024)
+        let hk_pqspk = Hkdf::<Sha256>::new(None, recovery_key_bytes);
+        let mut pqspk_seed = [0u8; 32];
+        hk_pqspk
+            .expand(b"SyftBox_PQ_Prekey_v1", &mut pqspk_seed)
+            .map_err(|_| RecoveryError::DerivationFailed)?;
+
+        let mut pqspk_rng = rand::rngs::StdRng::from_seed(pqspk_seed);
+        let signal_pq_signed_pre_key_pair =
+            kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut pqspk_rng);
+
+        Ok(SyftPrivateKeys {
+            signal_identity_key_pair: Sensitive::new(signal_identity_key_pair),
+            signal_signed_pre_key_pair: Sensitive::new(signal_signed_pre_key_pair),
+            signal_pq_signed_pre_key_pair: Sensitive::new(signal_pq_signed_pre_key_pair),
+        })
     }
 }
 
