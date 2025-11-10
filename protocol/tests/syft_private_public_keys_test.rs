@@ -29,19 +29,19 @@ fn test_private_keys_to_public_bundle() {
 
     // Verify the public bundle has correct keys
     assert_eq!(
-        public_bundle.identity_public_key.serialize(),
+        public_bundle.signal_identity_public_key.serialize(),
         signal_identity_key_pair.identity_key().serialize(),
         "Identity key should match"
     );
 
     assert_eq!(
-        public_bundle.signed_public_pre_key.serialize(),
+        public_bundle.signal_signed_public_pre_key.serialize(),
         signal_signed_pre_key_pair.public_key.serialize(),
         "Signed pre key should match"
     );
 
     assert_eq!(
-        public_bundle.pq_public_pre_key.serialize(),
+        public_bundle.signal_pq_public_pre_key.serialize(),
         signal_pq_signed_pre_key_pair.public_key.serialize(),
         "PQ pre key should match"
     );
@@ -72,20 +72,20 @@ fn test_private_keys_multiple_bundles_same_keys() {
 
     // Same keys should produce bundles with same public keys
     assert_eq!(
-        bundle1.identity_public_key.serialize(),
-        bundle2.identity_public_key.serialize(),
+        bundle1.signal_identity_public_key.serialize(),
+        bundle2.signal_identity_public_key.serialize(),
         "Identity keys should match"
     );
 
     assert_eq!(
-        bundle1.signed_public_pre_key.serialize(),
-        bundle2.signed_public_pre_key.serialize(),
+        bundle1.signal_signed_public_pre_key.serialize(),
+        bundle2.signal_signed_public_pre_key.serialize(),
         "Signed pre keys should match"
     );
 
     assert_eq!(
-        bundle1.pq_public_pre_key.serialize(),
-        bundle2.pq_public_pre_key.serialize(),
+        bundle1.signal_pq_public_pre_key.serialize(),
+        bundle2.signal_pq_public_pre_key.serialize(),
         "PQ pre keys should match"
     );
 
@@ -115,15 +115,15 @@ fn test_public_key_bundle_creation() {
     .expect("Bundle creation should succeed");
 
     assert_eq!(
-        bundle.identity_public_key.serialize(),
+        bundle.signal_identity_public_key.serialize(),
         identity_pair.identity_key().serialize()
     );
     assert_eq!(
-        bundle.signed_public_pre_key.serialize(),
+        bundle.signal_signed_public_pre_key.serialize(),
         signed_pre_key_pair.public_key.serialize()
     );
     assert_eq!(
-        bundle.pq_public_pre_key.serialize(),
+        bundle.signal_pq_public_pre_key.serialize(),
         pq_pre_key_pair.public_key.serialize()
     );
 }
@@ -168,7 +168,7 @@ fn test_public_key_bundle_detects_tampered_ec_key() {
 
     // Tamper with EC key by replacing it
     let different_key_pair = KeyPair::generate(&mut rng);
-    bundle.signed_public_pre_key = different_key_pair.public_key;
+    bundle.signal_signed_public_pre_key = different_key_pair.public_key;
 
     assert!(
         !bundle.verify_signatures(),
@@ -194,7 +194,7 @@ fn test_public_key_bundle_detects_tampered_pq_key() {
 
     // Tamper with PQ key by replacing it
     let different_pq_pair = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
-    bundle.pq_public_pre_key = different_pq_pair.public_key;
+    bundle.signal_pq_public_pre_key = different_pq_pair.public_key;
 
     assert!(
         !bundle.verify_signatures(),
@@ -219,9 +219,9 @@ fn test_public_key_bundle_detects_tampered_ec_signature() {
     .expect("Bundle creation should succeed");
 
     // Tamper with EC signature
-    let mut tampered_sig = bundle.signed_pre_key_signature.to_vec();
+    let mut tampered_sig = bundle.signal_signed_pre_key_signature.to_vec();
     tampered_sig[0] ^= 0xFF; // Flip bits in first byte
-    bundle.signed_pre_key_signature = tampered_sig.into_boxed_slice();
+    bundle.signal_signed_pre_key_signature = tampered_sig.into_boxed_slice();
 
     assert!(
         !bundle.verify_signatures(),
@@ -246,9 +246,9 @@ fn test_public_key_bundle_detects_tampered_pq_signature() {
     .expect("Bundle creation should succeed");
 
     // Tamper with PQ signature
-    let mut tampered_sig = bundle.pq_pre_key_signature.to_vec();
+    let mut tampered_sig = bundle.signal_pq_pre_key_signature.to_vec();
     tampered_sig[0] ^= 0xFF; // Flip bits in first byte
-    bundle.pq_pre_key_signature = tampered_sig.into_boxed_slice();
+    bundle.signal_pq_pre_key_signature = tampered_sig.into_boxed_slice();
 
     assert!(
         !bundle.verify_signatures(),
@@ -275,11 +275,11 @@ fn test_public_key_bundle_total_size() {
     let total = bundle.total_size();
 
     // Calculate expected size manually
-    let expected = bundle.identity_public_key.serialize().len()
-        + bundle.signed_public_pre_key.serialize().len()
-        + bundle.signed_pre_key_signature.len()
-        + bundle.pq_public_pre_key.serialize().len()
-        + bundle.pq_pre_key_signature.len();
+    let expected = bundle.signal_identity_public_key.serialize().len()
+        + bundle.signal_signed_public_pre_key.serialize().len()
+        + bundle.signal_signed_pre_key_signature.len()
+        + bundle.signal_pq_public_pre_key.serialize().len()
+        + bundle.signal_pq_pre_key_signature.len();
 
     assert_eq!(total, expected, "Total size should match sum of parts");
 
@@ -315,22 +315,25 @@ fn test_public_key_bundle_clone() {
 
     // Verify all fields are identical
     assert_eq!(
-        bundle1.identity_public_key.serialize(),
-        bundle2.identity_public_key.serialize()
+        bundle1.signal_identity_public_key.serialize(),
+        bundle2.signal_identity_public_key.serialize()
     );
     assert_eq!(
-        bundle1.signed_public_pre_key.serialize(),
-        bundle2.signed_public_pre_key.serialize()
+        bundle1.signal_signed_public_pre_key.serialize(),
+        bundle2.signal_signed_public_pre_key.serialize()
     );
     assert_eq!(
-        bundle1.signed_pre_key_signature,
-        bundle2.signed_pre_key_signature
+        bundle1.signal_signed_pre_key_signature,
+        bundle2.signal_signed_pre_key_signature
     );
     assert_eq!(
-        bundle1.pq_public_pre_key.serialize(),
-        bundle2.pq_public_pre_key.serialize()
+        bundle1.signal_pq_public_pre_key.serialize(),
+        bundle2.signal_pq_public_pre_key.serialize()
     );
-    assert_eq!(bundle1.pq_pre_key_signature, bundle2.pq_pre_key_signature);
+    assert_eq!(
+        bundle1.signal_pq_pre_key_signature,
+        bundle2.signal_pq_pre_key_signature
+    );
 
     // Both should verify
     assert!(bundle1.verify_signatures());
@@ -368,11 +371,11 @@ fn test_public_key_bundle_cross_contamination() {
 
     // Create a mixed bundle: identity from bundle1, but keys and sigs from bundle2
     let mixed_bundle = SyftPublicKeyBundle {
-        identity_public_key: bundle1.identity_public_key,
-        signed_public_pre_key: bundle2.signed_public_pre_key,
-        signed_pre_key_signature: bundle2.signed_pre_key_signature.clone(),
-        pq_public_pre_key: bundle2.pq_public_pre_key.clone(),
-        pq_pre_key_signature: bundle2.pq_pre_key_signature.clone(),
+        signal_identity_public_key: bundle1.signal_identity_public_key,
+        signal_signed_public_pre_key: bundle2.signal_signed_public_pre_key,
+        signal_signed_pre_key_signature: bundle2.signal_signed_pre_key_signature.clone(),
+        signal_pq_public_pre_key: bundle2.signal_pq_public_pre_key.clone(),
+        signal_pq_pre_key_signature: bundle2.signal_pq_pre_key_signature.clone(),
     };
 
     assert!(
@@ -413,15 +416,15 @@ fn test_public_key_bundle_deterministic_within_session() {
 
     // Public keys should be identical
     assert_eq!(
-        bundle1.identity_public_key.serialize(),
-        bundle2.identity_public_key.serialize()
+        bundle1.signal_identity_public_key.serialize(),
+        bundle2.signal_identity_public_key.serialize()
     );
     assert_eq!(
-        bundle1.signed_public_pre_key.serialize(),
-        bundle2.signed_public_pre_key.serialize()
+        bundle1.signal_signed_public_pre_key.serialize(),
+        bundle2.signal_signed_public_pre_key.serialize()
     );
     assert_eq!(
-        bundle1.pq_public_pre_key.serialize(),
-        bundle2.pq_public_pre_key.serialize()
+        bundle1.signal_pq_public_pre_key.serialize(),
+        bundle2.signal_pq_public_pre_key.serialize()
     );
 }

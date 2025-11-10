@@ -215,11 +215,11 @@ impl<T> Drop for Sensitive<T> {
 /// Bundle of public keys and signatures for publishing in DID documents.
 #[derive(Clone)]
 pub struct SyftPublicKeyBundle {
-    pub identity_public_key: IdentityKey,
-    pub signed_public_pre_key: PublicKey,
-    pub signed_pre_key_signature: Box<[u8]>,
-    pub pq_public_pre_key: kem::PublicKey,
-    pub pq_pre_key_signature: Box<[u8]>,
+    pub signal_identity_public_key: IdentityKey,
+    pub signal_signed_public_pre_key: PublicKey,
+    pub signal_signed_pre_key_signature: Box<[u8]>,
+    pub signal_pq_public_pre_key: kem::PublicKey,
+    pub signal_pq_pre_key_signature: Box<[u8]>,
 }
 
 impl SyftPublicKeyBundle {
@@ -243,35 +243,41 @@ impl SyftPublicKeyBundle {
             .calculate_signature(&pq_pre_key_pair.public_key.serialize(), rng)?;
 
         Ok(Self {
-            identity_public_key: *identity_key_pair.identity_key(),
-            signed_public_pre_key: signed_pre_key_pair.public_key,
-            signed_pre_key_signature,
-            pq_public_pre_key: pq_pre_key_pair.public_key.clone(),
-            pq_pre_key_signature,
+            signal_identity_public_key: *identity_key_pair.identity_key(),
+            signal_signed_public_pre_key: signed_pre_key_pair.public_key,
+            signal_signed_pre_key_signature: signed_pre_key_signature,
+            signal_pq_public_pre_key: pq_pre_key_pair.public_key.clone(),
+            signal_pq_pre_key_signature: pq_pre_key_signature,
         })
     }
 
     /// Verify both signatures in the bundle.
     pub fn verify_signatures(&self) -> bool {
-        let ec_sig_valid = self.identity_public_key.public_key().verify_signature(
-            &self.signed_public_pre_key.serialize(),
-            &self.signed_pre_key_signature,
-        );
+        let ec_sig_valid = self
+            .signal_identity_public_key
+            .public_key()
+            .verify_signature(
+                &self.signal_signed_public_pre_key.serialize(),
+                &self.signal_signed_pre_key_signature,
+            );
 
-        let pq_sig_valid = self.identity_public_key.public_key().verify_signature(
-            &self.pq_public_pre_key.serialize(),
-            &self.pq_pre_key_signature,
-        );
+        let pq_sig_valid = self
+            .signal_identity_public_key
+            .public_key()
+            .verify_signature(
+                &self.signal_pq_public_pre_key.serialize(),
+                &self.signal_pq_pre_key_signature,
+            );
 
         ec_sig_valid && pq_sig_valid
     }
 
     /// Get the total size of the bundle in bytes.
     pub fn total_size(&self) -> usize {
-        self.identity_public_key.serialize().len()
-            + self.signed_public_pre_key.serialize().len()
-            + self.signed_pre_key_signature.len()
-            + self.pq_public_pre_key.serialize().len()
-            + self.pq_pre_key_signature.len()
+        self.signal_identity_public_key.serialize().len()
+            + self.signal_signed_public_pre_key.serialize().len()
+            + self.signal_signed_pre_key_signature.len()
+            + self.signal_pq_public_pre_key.serialize().len()
+            + self.signal_pq_pre_key_signature.len()
     }
 }

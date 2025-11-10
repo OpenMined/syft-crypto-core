@@ -232,11 +232,11 @@ fn test_key_bundle_serialization() -> Result<(), SignalProtocolError> {
     println!("   ✅ Bundle created with both signatures");
 
     // Serialize public components (what goes into DID document)
-    let identity_public_bytes = bundle.identity_public_key.serialize();
-    let spk_public_bytes = bundle.signed_public_pre_key.serialize();
-    let pqspk_public_bytes = bundle.pq_public_pre_key.serialize();
-    let spk_signature = &bundle.signed_pre_key_signature;
-    let pqspk_signature = &bundle.pq_pre_key_signature;
+    let identity_public_bytes = bundle.signal_identity_public_key.serialize();
+    let spk_public_bytes = bundle.signal_signed_public_pre_key.serialize();
+    let pqspk_public_bytes = bundle.signal_pq_public_pre_key.serialize();
+    let spk_signature = &bundle.signal_signed_pre_key_signature;
+    let pqspk_signature = &bundle.signal_pq_pre_key_signature;
 
     println!("\n📦 Public Key Bundle (for DID document):");
     println!("   IK (Identity Key):");
