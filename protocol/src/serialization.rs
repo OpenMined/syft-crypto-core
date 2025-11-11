@@ -21,6 +21,7 @@ use crate::keys::{SyftPrivateKeys, SyftPublicKeyBundle};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use libsignal_protocol::{IdentityKey, IdentityKeyPair, KeyPair, PublicKey, kem};
 use serde_json::{Value, json};
+use zeroize::{Zeroize, Zeroizing};
 
 /// Serialize public key bundle to W3C DID document format.
 ///
@@ -275,11 +276,11 @@ pub fn deserialize_private_keys(json: &Value) -> SerializationResult<SyftPrivate
         .get("identity_key")
         .ok_or(SerializationError::MissingIdentityKey)?;
 
-    let identity_private_bytes = decode_base64url(
+    let identity_private_bytes = Zeroizing::new(decode_base64url(
         identity_obj["d"]
             .as_str()
             .ok_or(SerializationError::InvalidFormat)?,
-    )?;
+    )?);
 
     let identity_keypair = IdentityKeyPair::try_from(&identity_private_bytes[..])
         .map_err(|_| SerializationError::InvalidFormat)?;
@@ -289,11 +290,11 @@ pub fn deserialize_private_keys(json: &Value) -> SerializationResult<SyftPrivate
         .get("signed_prekey")
         .ok_or(SerializationError::MissingSignedPrekey)?;
 
-    let spk_private_bytes = decode_base64url(
+    let spk_private_bytes = Zeroizing::new(decode_base64url(
         spk_obj["d"]
             .as_str()
             .ok_or(SerializationError::InvalidFormat)?,
-    )?;
+    )?);
 
     // Need to get public key bytes from JSON as well
     let spk_public_bytes = decode_base64url(
@@ -310,11 +311,11 @@ pub fn deserialize_private_keys(json: &Value) -> SerializationResult<SyftPrivate
         .get("pq_prekey")
         .ok_or(SerializationError::MissingPQPrekey)?;
 
-    let pqspk_secret_bytes = decode_base64url(
+    let pqspk_secret_bytes = Zeroizing::new(decode_base64url(
         pqspk_obj["d"]
             .as_str()
             .ok_or(SerializationError::InvalidFormat)?,
-    )?;
+    )?);
 
     // Need to get public key bytes from JSON as well
     let pqspk_public_bytes = decode_base64url(
@@ -333,4 +334,26 @@ pub fn deserialize_private_keys(json: &Value) -> SerializationResult<SyftPrivate
         spk_keypair,
         pqspk_keypair,
     ))
+}
+
+/// Recursively zeroize all string data contained within a JSON value.
+pub(crate) fn zeroize_json_value(value: &mut Value) {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        Value::String(s) => unsafe {
+            // SAFETY: `String::as_mut_vec` exposes the underlying buffer for in-place zeroing.
+            s.as_mut_vec().zeroize();
+            s.clear();
+        },
+        Value::Array(items) => {
+            for item in items {
+                zeroize_json_value(item);
+            }
+        }
+        Value::Object(map) => {
+            for (_key, val) in map.iter_mut() {
+                zeroize_json_value(val);
+            }
+        }
+    }
 }
