@@ -3,7 +3,7 @@
 //! This module defines comprehensive error types for all cryptographic operations
 //! in the protocol layer, including key generation, serialization, and storage.
 
-use std::io;
+use std::{io, num::TryFromIntError};
 
 /// Main error type for the protocol layer
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +47,24 @@ pub enum KeyError {
     /// HKDF key derivation error
     #[error("HKDF error: output length invalid")]
     HkdfError,
+}
+
+impl From<&str> for KeyError {
+    fn from(value: &str) -> Self {
+        KeyError::SerializationError(value.to_string())
+    }
+}
+
+impl From<String> for KeyError {
+    fn from(value: String) -> Self {
+        KeyError::SerializationError(value)
+    }
+}
+
+impl From<TryFromIntError> for KeyError {
+    fn from(error: TryFromIntError) -> Self {
+        KeyError::SerializationError(error.to_string())
+    }
 }
 
 /// Error types specific to recovery key operations
