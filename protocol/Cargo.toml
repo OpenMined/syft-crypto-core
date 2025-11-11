@@ -24,7 +24,6 @@ urlencoding.workspace = true
 zeroize.workspace = true
 thiserror.workspace = true
 bip39.workspace = true
-windows-sys.workspace = true
 
 [dev-dependencies]
 rand_chacha.workspace = true

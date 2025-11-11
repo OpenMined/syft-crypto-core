@@ -1737,7 +1737,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "urlencoding",
- "windows-sys 0.59.0",
  "zeroize",
 ]
 
