@@ -309,7 +309,6 @@ mod windows_platform {
         CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE, FILE_SHARE_NONE,
         MOVEFILE_REPLACE_EXISTING, MoveFileExW,
     };
-    use windows_sys::core::PCWSTR;
 
     const SECURE_SDDL: &str = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)";
 
@@ -373,7 +372,7 @@ mod windows_platform {
         let sddl_w = wide_from_str(SECURE_SDDL);
         let ok = unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                PCWSTR(sddl_w.as_ptr()),
+                sddl_w.as_ptr(),
                 SDDL_REVISION_1,
                 &mut descriptor,
                 ptr::null_mut(),
@@ -393,7 +392,7 @@ mod windows_platform {
         let path_w = wide_from_path(path);
         let handle = unsafe {
             CreateFileW(
-                PCWSTR(path_w.as_ptr()),
+                path_w.as_ptr(),
                 FILE_GENERIC_WRITE,
                 FILE_SHARE_NONE,
                 &mut security_attributes,
@@ -420,13 +419,7 @@ mod windows_platform {
         let src_w = wide_from_path(src);
         let dst_w = wide_from_path(dst);
 
-        let ok = unsafe {
-            MoveFileExW(
-                PCWSTR(src_w.as_ptr()),
-                PCWSTR(dst_w.as_ptr()),
-                MOVEFILE_REPLACE_EXISTING,
-            )
-        };
+        let ok = unsafe { MoveFileExW(src_w.as_ptr(), dst_w.as_ptr(), MOVEFILE_REPLACE_EXISTING) };
 
         if ok == 0 {
             Err(io::Error::last_os_error())
