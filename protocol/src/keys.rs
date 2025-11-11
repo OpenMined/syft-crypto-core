@@ -13,9 +13,33 @@
 use crate::error::{RecoveryError, RecoveryResult};
 use libsignal_protocol::{IdentityKey, IdentityKeyPair, KeyPair, PublicKey, kem};
 use rand::RngCore;
+use sha2::{Digest, Sha256};
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+/// Compute SHA-256 fingerprint (a unique hex-encoded string of 64 characters) of an identity public key.
+///
+/// # Arguments
+/// * `identity_key` - The identity public key to create fingerprint
+///
+/// # Returns
+/// A 64-character hex string representing the SHA-256 hash of the public key bytes
+///
+/// # Example
+/// ```
+/// use syft_crypto_protocol::{SyftRecoveryKey, compute_identity_fingerprint};
+///
+/// let recovery_key = SyftRecoveryKey::generate();
+/// let private_keys = recovery_key.derive_keys().unwrap();
+/// let fingerprint = compute_identity_fingerprint(private_keys.identity().identity_key());
+/// assert_eq!(fingerprint.len(), 64); // SHA-256 = 32 bytes = 64 hex chars
+/// ```
+pub fn compute_identity_fingerprint(identity_key: &IdentityKey) -> String {
+    let pubkey_bytes = identity_key.serialize();
+    let hash = Sha256::digest(&pubkey_bytes);
+    hex::encode(hash)
+}
 
 /// 32-byte recovery key that deterministically derives all private keys.
 ///
