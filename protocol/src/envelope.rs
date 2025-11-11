@@ -1,4 +1,4 @@
-use crate::result::Result;
+use crate::Result;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -291,6 +291,6 @@ pub fn from_jcs_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
 mod tests {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/tests/cli/envelope_tests.rs"
+        "/src/tests/envelope_tests.rs"
     ));
 }

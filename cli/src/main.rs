@@ -1,6 +1,5 @@
 mod app;
 mod commands;
-mod envelope;
 mod protocol_interface;
 mod result;
 

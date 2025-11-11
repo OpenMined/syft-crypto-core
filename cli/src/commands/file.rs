@@ -3,10 +3,9 @@ use crate::app::{
     resolve_data_path, resolve_shadow_path, yes_no,
 };
 use crate::commands::{PlanPrinter, parse_optional_envelope, resolve_identity};
-use crate::envelope::ParsedEnvelope;
 use crate::protocol_interface::{
-    CURRENT_VERSION, MAGIC, build_stub_envelope, decrypt_allow_plaintext, decrypt_bytes,
-    encrypt_bytes, inspect_ciphertext,
+    CURRENT_VERSION, MAGIC, ParsedEnvelope, build_stub_envelope, decrypt_allow_plaintext,
+    decrypt_bytes, encrypt_bytes, inspect_ciphertext,
 };
 use clap::{Args, Subcommand};
 use std::fs;

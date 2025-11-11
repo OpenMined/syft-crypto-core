@@ -1,4 +1,5 @@
 pub mod did_utils;
+pub mod envelope;
 pub mod error;
 pub mod keys;
 pub mod pqxdh_params;

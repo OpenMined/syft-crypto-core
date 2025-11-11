@@ -8,8 +8,9 @@ use std::fmt::{self, Display};
 use std::path::{Path, PathBuf};
 
 use crate::app::{AppContext, Result, detect_single_identity, yes_no};
-use crate::envelope::ParsedEnvelope;
-use crate::protocol_interface::{has_syc_magic, parse_envelope, verify_stub_signature};
+use crate::protocol_interface::{
+    ParsedEnvelope, has_syc_magic, parse_envelope, verify_stub_signature,
+};
 
 pub(crate) use bytes::BytesCommand;
 pub(crate) use file::FileCommand;

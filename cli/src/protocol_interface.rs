@@ -159,8 +159,8 @@ pub(crate) fn stub_identity_fingerprint(identity: &str) -> String {
     format!("stub-{}", identity.replace('@', "_at_"))
 }
 
-pub use crate::envelope::{
-    CURRENT_VERSION, MAGIC, build_stub_envelope, has_syc_magic, parse_envelope,
+pub use syft_crypto_protocol::envelope::{
+    CURRENT_VERSION, MAGIC, ParsedEnvelope, build_stub_envelope, has_syc_magic, parse_envelope,
     verify_stub_signature,
 };
 
