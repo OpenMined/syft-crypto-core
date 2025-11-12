@@ -14,9 +14,8 @@ Following Signal's workspace pattern:
 syft-crypto-core/
 ├── protocol/           # Core crypto library (keep as small as possible for easy security audit)
 │   ├── src/
-│   │   ├── lib.rs
-│   │   └── pqxdh_params.rs
-│   └── tests/          # 24 comprehensive tests
+│   │   └── lib.rs
+│   └── tests/          # Comprehensive tests
 │
 ├── cli/                # Command-line interface to use the API in protocol/
 │   └── src/

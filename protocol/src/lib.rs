@@ -2,7 +2,6 @@ pub mod did_utils;
 pub mod envelope;
 pub mod error;
 pub mod keys;
-pub mod pqxdh_params;
 pub mod serialization;
 pub mod storage;
 
@@ -11,4 +10,3 @@ pub use keys::{
     SyftPrivateKeys, SyftPublicKeyBundle, SyftRecoveryKey, compute_identity_fingerprint,
     compute_key_fingerprint,
 };
-pub use pqxdh_params::{RecipientPqxdhParameters, SenderPqxdhParameters};
