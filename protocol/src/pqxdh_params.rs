@@ -10,17 +10,17 @@
 
 use libsignal_protocol::{IdentityKey, IdentityKeyPair, KeyPair, PublicKey, kem};
 
-/// Parameters for Alice (initiator) in simplified 3-key PQXDH
+/// Parameters for Sender (initiator) in simplified 3-key PQXDH
 ///
-/// Alice needs:
-/// - Her own identity key pair and ephemeral base key
-/// - Bob's public keys: identity, signed prekey, and PQ prekey
-pub struct AlicePqxdhParameters {
-    // Alice's keys
+/// The sender needs:
+/// - Their own identity key pair and ephemeral base key
+/// - Recipient's public keys: identity, signed prekey, and PQ prekey
+pub struct SenderPqxdhParameters {
+    // Sender's keys
     our_identity_key_pair: IdentityKeyPair,
     our_base_key_pair: KeyPair,
 
-    // Bob's public keys
+    // Recipient's public keys
     their_identity_key: IdentityKey,
     their_signed_pre_key: PublicKey,
     their_signed_pre_key_signature: Box<[u8]>,
@@ -28,17 +28,17 @@ pub struct AlicePqxdhParameters {
     their_pq_pre_key_signature: Box<[u8]>,
 }
 
-impl AlicePqxdhParameters {
-    /// Create new parameters for Alice (initiator)
+impl SenderPqxdhParameters {
+    /// Create new parameters for Sender (initiator)
     ///
     /// # Arguments
-    /// * `our_identity_key_pair` - Alice's long-term identity key pair
-    /// * `our_base_key_pair` - Alice's ephemeral key for this session
-    /// * `their_identity_key` - Bob's identity key (from DID document)
-    /// * `their_signed_pre_key` - Bob's signed EC prekey (from DID document)
-    /// * `their_signed_pre_key_signature` - Signature on Bob's EC prekey
-    /// * `their_pq_pre_key` - Bob's PQ last-resort prekey (from DID document)
-    /// * `their_pq_pre_key_signature` - Signature on Bob's PQ prekey
+    /// * `our_identity_key_pair` - Sender's long-term identity key pair
+    /// * `our_base_key_pair` - Sender's ephemeral key for this session
+    /// * `their_identity_key` - Recipient's identity key (from DID document)
+    /// * `their_signed_pre_key` - Recipient's signed EC prekey (from DID document)
+    /// * `their_signed_pre_key_signature` - Signature on recipient's EC prekey
+    /// * `their_pq_pre_key` - Recipient's PQ last-resort prekey (from DID document)
+    /// * `their_pq_pre_key_signature` - Signature on recipient's PQ prekey
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         our_identity_key_pair: IdentityKeyPair,
@@ -60,7 +60,7 @@ impl AlicePqxdhParameters {
         }
     }
 
-    // Getters for Alice's keys
+    // Getters for Sender's keys
     #[inline]
     pub fn our_identity_key_pair(&self) -> &IdentityKeyPair {
         &self.our_identity_key_pair
@@ -71,7 +71,7 @@ impl AlicePqxdhParameters {
         &self.our_base_key_pair
     }
 
-    // Getters for Bob's public keys
+    // Getters for Recipient's public keys
     #[inline]
     pub fn their_identity_key(&self) -> &IdentityKey {
         &self.their_identity_key
@@ -98,36 +98,36 @@ impl AlicePqxdhParameters {
     }
 }
 
-/// Parameters for Bob (responder) in simplified 3-key PQXDH
+/// Parameters for Recipient (responder) in simplified 3-key PQXDH
 ///
-/// Bob needs:
-/// - His own identity key pair and prekey pairs
-/// - Alice's public keys: identity and ephemeral base key
-/// - The Kyber ciphertext that Alice generated
-pub struct BobPqxdhParameters<'a> {
-    // Bob's keys
+/// The recipient needs:
+/// - Their own identity key pair and prekey pairs
+/// - Sender's public keys: identity and ephemeral base key
+/// - The Kyber ciphertext that the sender generated
+pub struct RecipientPqxdhParameters<'a> {
+    // Recipient's keys
     our_identity_key_pair: IdentityKeyPair,
     our_signed_pre_key_pair: KeyPair,
     our_pq_pre_key_pair: kem::KeyPair,
 
-    // Alice's public keys
+    // Sender's public keys
     their_identity_key: IdentityKey,
     their_base_key: PublicKey,
 
-    // Kyber ciphertext from Alice
+    // Kyber ciphertext from Sender
     their_kyber_ciphertext: &'a kem::SerializedCiphertext,
 }
 
-impl<'a> BobPqxdhParameters<'a> {
-    /// Create new parameters for Bob (responder)
+impl<'a> RecipientPqxdhParameters<'a> {
+    /// Create new parameters for Recipient (responder)
     ///
     /// # Arguments
-    /// * `our_identity_key_pair` - Bob's long-term identity key pair
-    /// * `our_signed_pre_key_pair` - Bob's signed EC prekey pair
-    /// * `our_pq_pre_key_pair` - Bob's PQ last-resort prekey pair
-    /// * `their_identity_key` - Alice's identity key (from PreKey message)
-    /// * `their_base_key` - Alice's ephemeral key (from PreKey message)
-    /// * `their_kyber_ciphertext` - Kyber ciphertext from Alice
+    /// * `our_identity_key_pair` - Recipient's long-term identity key pair
+    /// * `our_signed_pre_key_pair` - Recipient's signed EC prekey pair
+    /// * `our_pq_pre_key_pair` - Recipient's PQ last-resort prekey pair
+    /// * `their_identity_key` - Sender's identity key (from PreKey message)
+    /// * `their_base_key` - Sender's ephemeral key (from PreKey message)
+    /// * `their_kyber_ciphertext` - Kyber ciphertext from Sender
     pub fn new(
         our_identity_key_pair: IdentityKeyPair,
         our_signed_pre_key_pair: KeyPair,
@@ -146,7 +146,7 @@ impl<'a> BobPqxdhParameters<'a> {
         }
     }
 
-    // Getters for Bob's keys
+    // Getters for Recipient's keys
     #[inline]
     pub fn our_identity_key_pair(&self) -> &IdentityKeyPair {
         &self.our_identity_key_pair
@@ -162,7 +162,7 @@ impl<'a> BobPqxdhParameters<'a> {
         &self.our_pq_pre_key_pair
     }
 
-    // Getters for Alice's public keys
+    // Getters for Sender's public keys
     #[inline]
     pub fn their_identity_key(&self) -> &IdentityKey {
         &self.their_identity_key

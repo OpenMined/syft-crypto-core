@@ -1,11 +1,11 @@
 //! Tests for PQXDH Parameter Structs
 //!
-//! Tests the AlicePqxdhParameters, BobPqxdhParameters, and PublicKeyBundle
+//! Tests the SenderPqxdhParameters, RecipientPqxdhParameters, and PublicKeyBundle
 //! following libsignal's testing patterns.
 
 use libsignal_protocol::*;
 use rand::SeedableRng;
-use syft_crypto_protocol::{AlicePqxdhParameters, BobPqxdhParameters, SyftPublicKeyBundle};
+use syft_crypto_protocol::{RecipientPqxdhParameters, SenderPqxdhParameters, SyftPublicKeyBundle};
 
 #[test]
 fn test_public_key_bundle_creation() {
@@ -52,46 +52,46 @@ fn test_public_key_bundle_creation() {
 }
 
 #[test]
-fn test_alice_parameters_creation() {
-    println!("🔐 Test: AlicePqxdhParameters Creation");
+fn test_sender_parameters_creation() {
+    println!("🔐 Test: SenderPqxdhParameters Creation");
     println!("{}", "=".repeat(60));
 
     let mut rng = rand_chacha::ChaCha20Rng::from_seed([2u8; 32]);
 
-    // Generate Alice's keys
-    println!("\n📝 Generating Alice's keys...");
-    let alice_identity = IdentityKeyPair::generate(&mut rng);
-    let alice_base = KeyPair::generate(&mut rng);
-    println!("   ✅ Alice's identity and base keys generated");
+    // Generate Sender's keys
+    println!("\n📝 Generating Sender's keys...");
+    let sender_identity = IdentityKeyPair::generate(&mut rng);
+    let sender_ephemeral = KeyPair::generate(&mut rng);
+    println!("   ✅ Sender's identity and ephemeral keys generated");
 
-    // Generate Bob's keys and bundle
-    println!("\n📝 Generating Bob's key bundle...");
-    let bob_identity = IdentityKeyPair::generate(&mut rng);
-    let bob_signed_prekey = KeyPair::generate(&mut rng);
-    let bob_pq_prekey = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
+    // Generate Recipient's keys and bundle
+    println!("\n📝 Generating Recipient's key bundle...");
+    let recipient_identity = IdentityKeyPair::generate(&mut rng);
+    let recipient_signed_prekey = KeyPair::generate(&mut rng);
+    let recipient_pq_prekey = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
 
-    let bob_spk_sig = bob_identity
+    let recipient_spk_sig = recipient_identity
         .private_key()
-        .calculate_signature(&bob_signed_prekey.public_key.serialize(), &mut rng)
+        .calculate_signature(&recipient_signed_prekey.public_key.serialize(), &mut rng)
         .unwrap();
 
-    let bob_pq_sig = bob_identity
+    let recipient_pq_sig = recipient_identity
         .private_key()
-        .calculate_signature(&bob_pq_prekey.public_key.serialize(), &mut rng)
+        .calculate_signature(&recipient_pq_prekey.public_key.serialize(), &mut rng)
         .unwrap();
 
-    println!("   ✅ Bob's bundle with signatures generated");
+    println!("   ✅ Recipient's bundle with signatures generated");
 
-    // Create Alice's parameters
-    println!("\n📝 Creating AlicePqxdhParameters...");
-    let params = AlicePqxdhParameters::new(
-        alice_identity,
-        alice_base,
-        *bob_identity.identity_key(),
-        bob_signed_prekey.public_key,
-        bob_spk_sig,
-        bob_pq_prekey.public_key.clone(),
-        bob_pq_sig,
+    // Create Sender's parameters
+    println!("\n📝 Creating SenderPqxdhParameters...");
+    let params = SenderPqxdhParameters::new(
+        sender_identity,
+        sender_ephemeral,
+        *recipient_identity.identity_key(),
+        recipient_signed_prekey.public_key,
+        recipient_spk_sig,
+        recipient_pq_prekey.public_key.clone(),
+        recipient_pq_sig,
     );
 
     // Test getters
@@ -138,46 +138,49 @@ fn test_alice_parameters_creation() {
     println!("   ✅ All parameters accessible and correct size");
 
     println!("\n{}", "=".repeat(60));
-    println!("🎯 AlicePqxdhParameters Creation: PASSED");
+    println!("🎯 SenderPqxdhParameters Creation: PASSED");
     println!("{}", "=".repeat(60));
 }
 
 #[test]
-fn test_bob_parameters_creation() {
-    println!("🔐 Test: BobPqxdhParameters Creation");
+fn test_recipient_parameters_creation() {
+    println!("🔐 Test: RecipientPqxdhParameters Creation");
     println!("{}", "=".repeat(60));
 
     let mut rng = rand_chacha::ChaCha20Rng::from_seed([3u8; 32]);
 
-    // Generate Alice's keys
-    println!("\n📝 Generating Alice's keys...");
-    let alice_identity = IdentityKeyPair::generate(&mut rng);
-    let alice_base = KeyPair::generate(&mut rng);
-    println!("   ✅ Alice's keys generated");
+    // Generate Sender's keys
+    println!("\n📝 Generating Sender's keys...");
+    let sender_identity = IdentityKeyPair::generate(&mut rng);
+    let sender_ephemeral = KeyPair::generate(&mut rng);
+    println!("   ✅ Sender's keys generated");
 
-    // Generate Bob's keys
-    println!("\n📝 Generating Bob's keys...");
-    let bob_identity = IdentityKeyPair::generate(&mut rng);
-    let bob_signed_prekey = KeyPair::generate(&mut rng);
-    let bob_pq_prekey = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
-    println!("   ✅ Bob's keys generated");
+    // Generate Recipient's keys
+    println!("\n📝 Generating Recipient's keys...");
+    let recipient_identity = IdentityKeyPair::generate(&mut rng);
+    let recipient_signed_prekey = KeyPair::generate(&mut rng);
+    let recipient_pq_prekey = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
+    println!("   ✅ Recipient's keys generated");
 
-    // Simulate Alice encapsulating to Bob's PQ key
-    println!("\n📝 Simulating Alice's KEM encapsulation...");
-    let (_, kyber_ciphertext) = bob_pq_prekey.public_key.encapsulate(&mut rng).unwrap();
+    // Simulate Sender encapsulating to Recipient's PQ key
+    println!("\n📝 Simulating Sender's KEM encapsulation...");
+    let (_, kyber_ciphertext) = recipient_pq_prekey
+        .public_key
+        .encapsulate(&mut rng)
+        .unwrap();
     println!(
         "   ✅ Kyber ciphertext created: {} bytes",
         kyber_ciphertext.len()
     );
 
-    // Create Bob's parameters
-    println!("\n📝 Creating BobPqxdhParameters...");
-    let params = BobPqxdhParameters::new(
-        bob_identity,
-        bob_signed_prekey,
-        bob_pq_prekey,
-        *alice_identity.identity_key(),
-        alice_base.public_key,
+    // Create Recipient's parameters
+    println!("\n📝 Creating RecipientPqxdhParameters...");
+    let params = RecipientPqxdhParameters::new(
+        recipient_identity,
+        recipient_signed_prekey,
+        recipient_pq_prekey,
+        *sender_identity.identity_key(),
+        sender_ephemeral.public_key,
         &kyber_ciphertext,
     );
 
@@ -223,7 +226,7 @@ fn test_bob_parameters_creation() {
     println!("   ✅ All parameters accessible and correct size");
 
     println!("\n{}", "=".repeat(60));
-    println!("🎯 BobPqxdhParameters Creation: PASSED");
+    println!("🎯 RecipientPqxdhParameters Creation: PASSED");
     println!("{}", "=".repeat(60));
 }
 
