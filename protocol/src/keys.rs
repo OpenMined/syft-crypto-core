@@ -18,10 +18,18 @@ use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// Compute SHA-256 fingerprint (a unique hex-encoded string of 64 characters) of an identity public key.
+/// Compute SHA-256 fingerprint of any public key bytes.
+pub fn compute_key_fingerprint(key_bytes: &[u8]) -> String {
+    let hash = Sha256::digest(key_bytes);
+    hex::encode(hash)
+}
+
+/// Compute SHA-256 fingerprint of an identity public key.
+///
+/// Convenience wrapper around `compute_key_fingerprint` for identity keys specifically.
 ///
 /// # Arguments
-/// * `identity_key` - The identity public key to create fingerprint
+/// * `identity_key` - The identity public key
 ///
 /// # Returns
 /// A 64-character hex string representing the SHA-256 hash of the public key bytes
@@ -36,9 +44,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// assert_eq!(fingerprint.len(), 64); // SHA-256 = 32 bytes = 64 hex chars
 /// ```
 pub fn compute_identity_fingerprint(identity_key: &IdentityKey) -> String {
-    let pubkey_bytes = identity_key.serialize();
-    let hash = Sha256::digest(&pubkey_bytes);
-    hex::encode(hash)
+    compute_key_fingerprint(&identity_key.serialize())
 }
 
 /// 32-byte recovery key that deterministically derives all private keys.
@@ -392,6 +398,11 @@ impl SyftPublicKeyBundle {
             );
 
         ec_sig_valid && pq_sig_valid
+    }
+
+    /// Compute and return the identity public key fingerprint.
+    pub fn identity_fingerprint(&self) -> String {
+        compute_identity_fingerprint(&self.signal_identity_public_key)
     }
 
     /// Get the total size of the bundle in bytes.

@@ -9,5 +9,6 @@ pub mod storage;
 pub use error::{KeyError, RecoveryError, Result, SerializationError};
 pub use keys::{
     SyftPrivateKeys, SyftPublicKeyBundle, SyftRecoveryKey, compute_identity_fingerprint,
+    compute_key_fingerprint,
 };
 pub use pqxdh_params::{AlicePqxdhParameters, BobPqxdhParameters};
