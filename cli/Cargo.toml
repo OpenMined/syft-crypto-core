@@ -22,6 +22,7 @@ serde_json.workspace = true
 hex.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
+urlencoding.workspace = true
 tar = "0.4"
 flate2 = "1.0"
 

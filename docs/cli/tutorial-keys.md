@@ -156,14 +156,14 @@ syc \
 Sample output:
 
 ```
-  sender: alice@example.org (ik_fingerprint: stub-alice_at_example.org)
-  cached sender fingerprint matches (stub-alice_at_example.org)
+  sender: alice@example.org (ik_fingerprint: 8d3eb7d3c4bb1f3d...c1f4a29b7f08a6d3)
+  cached sender fingerprint matches (8d3eb7d3c4bb1f3d...c1f4a29b7f08a6d3)
 ```
 
 If the cached fingerprint differs, `file inspect` prints:
 
 ```
-  warning: cached sender fingerprint stub-alice_at_example.org differs from envelope stub-alice_at_example.org-tampered (TOFU violation)
+  warning: cached sender fingerprint 8d3eb7d3c4bb1f3d...c1f4a29b7f08a6d3 differs from envelope 5a90d57e2c2ef8c4...9b8d0f1b3ac4e122 (TOFU violation)
 ```
 
 Use this to catch unexpected rekeys or tampering before decrypting data.
@@ -177,10 +177,19 @@ different fingerprint, `key import` blocks the operation unless you supply
 `--force`.
 
 ```bash
-# simulate a tampered bundle
-jq '.identity_fingerprint = "stub-alice_at_example.org-tampered"' \
-  sandbox/alice/datasites/alice@example.org/public/crypto/did.json \
-  > sandbox/alice/datasites/alice@example.org/public/crypto/did-tampered.json
+# simulate a tampered bundle by swapping Bob's keys while claiming Alice's identity
+cp \
+  sandbox/bob/datasites/bob@example.org/public/crypto/did.json \
+  sandbox/alice/datasites/alice@example.org/public/crypto/did-tampered.json
+jq \
+  '.identity = "alice@example.org" |
+   .identity_fingerprint = "bob-pretending-to-be-alice" |
+   .id = "did:web:syftbox.net:alice%40example.org"' \
+  sandbox/alice/datasites/alice@example.org/public/crypto/did-tampered.json \
+  > sandbox/alice/datasites/alice@example.org/public/crypto/did-tampered.json.tmp
+mv \
+  sandbox/alice/datasites/alice@example.org/public/crypto/did-tampered.json.tmp \
+  sandbox/alice/datasites/alice@example.org/public/crypto/did-tampered.json
 
 # deliver the tampered bundle to Bob's datasite (simulating sync)
 cp \
@@ -197,7 +206,7 @@ syc \
 This prints an error similar to:
 
 ```
-syc: bundle for alice@example.org already cached with fingerprint stub-alice_at_example.org – new fingerprint stub-alice_at_example.org-tampered requires --force
+syc: bundle for alice@example.org already cached with fingerprint 8d3eb7d3c4bb1f3d...c1f4a29b7f08a6d3 – new fingerprint 5a90d57e2c2ef8c4...9b8d0f1b3ac4e122 requires --force
 ```
 
 When you intentionally need to rotate keys, re-run the command with `--force`:

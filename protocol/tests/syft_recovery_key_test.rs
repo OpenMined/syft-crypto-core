@@ -319,5 +319,9 @@ fn has_min_entropy(bytes: &[u8; 32]) -> bool {
         return false;
     }
 
-    true
+    let mut seen = [false; 256];
+    for &byte in bytes {
+        seen[byte as usize] = true;
+    }
+    seen.iter().filter(|&&present| present).count() >= 8
 }

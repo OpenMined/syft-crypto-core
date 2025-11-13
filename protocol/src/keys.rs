@@ -13,9 +13,39 @@
 use crate::error::{RecoveryError, RecoveryResult};
 use libsignal_protocol::{IdentityKey, IdentityKeyPair, KeyPair, PublicKey, kem};
 use rand::RngCore;
+use sha2::{Digest, Sha256};
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+/// Compute SHA-256 fingerprint of any public key bytes.
+pub fn compute_key_fingerprint(key_bytes: &[u8]) -> String {
+    let hash = Sha256::digest(key_bytes);
+    hex::encode(hash)
+}
+
+/// Compute SHA-256 fingerprint of an identity public key.
+///
+/// Convenience wrapper around `compute_key_fingerprint` for identity keys specifically.
+///
+/// # Arguments
+/// * `identity_key` - The identity public key
+///
+/// # Returns
+/// A 64-character hex string representing the SHA-256 hash of the public key bytes
+///
+/// # Example
+/// ```
+/// use syft_crypto_protocol::{SyftRecoveryKey, compute_identity_fingerprint};
+///
+/// let recovery_key = SyftRecoveryKey::generate();
+/// let private_keys = recovery_key.derive_keys().unwrap();
+/// let fingerprint = compute_identity_fingerprint(private_keys.identity().identity_key());
+/// assert_eq!(fingerprint.len(), 64); // SHA-256 = 32 bytes = 64 hex chars
+/// ```
+pub fn compute_identity_fingerprint(identity_key: &IdentityKey) -> String {
+    compute_key_fingerprint(&identity_key.serialize())
+}
 
 /// 32-byte recovery key that deterministically derives all private keys.
 ///
@@ -155,7 +185,11 @@ impl SyftRecoveryKey {
             return false;
         }
 
-        true
+        let mut seen = [false; 256];
+        for &byte in bytes {
+            seen[byte as usize] = true;
+        }
+        seen.iter().filter(|&&present| present).count() >= 8
     }
 
     /// Get raw bytes (for internal use only)
@@ -301,11 +335,10 @@ impl<T> DerefMut for Sensitive<T> {
 impl<T> Drop for Sensitive<T> {
     fn drop(&mut self) {
         unsafe {
-            // Drop the inner value first so any heap allocations are freed.
-            ManuallyDrop::drop(&mut self.0);
-            // Then zeroize the now-dropped memory to clear residual key material.
-            let ptr = (&mut self.0 as *mut ManuallyDrop<T>).cast::<u8>();
-            std::ptr::write_bytes(ptr, 0, std::mem::size_of::<T>());
+            let ptr = (&mut self.0 as *mut ManuallyDrop<T>).cast::<T>();
+            let value = ptr.read();
+            std::ptr::write_bytes(ptr.cast::<u8>(), 0, std::mem::size_of::<T>());
+            drop(value);
         }
     }
 }
@@ -368,6 +401,11 @@ impl SyftPublicKeyBundle {
             );
 
         ec_sig_valid && pq_sig_valid
+    }
+
+    /// Compute and return the identity public key fingerprint.
+    pub fn identity_fingerprint(&self) -> String {
+        compute_identity_fingerprint(&self.signal_identity_public_key)
     }
 
     /// Get the total size of the bundle in bytes.

@@ -43,6 +43,9 @@ The header is binary. If you dump the file as UTF‑8 you may see odd characters
 6. **Ciphertext**
    - Remainder of the file: the encrypted payload emitted by the libsignal file layer.
 
+![](./evelope-structure.png)
+
+
 ---
 
 ## Prelude Schema
