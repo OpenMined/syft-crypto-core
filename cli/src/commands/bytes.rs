@@ -1,16 +1,13 @@
-use crate::app::{AppContext, Result, atomic_write, resolve_data_path};
-use crate::commands::{
-    PlanPrinter,
-    crypto::{
-        load_private_keys_for_identity, resolve_recipient_bundle, resolve_sender_bundle_for_decrypt,
-    },
-    parse_optional_envelope, resolve_identity,
-};
-use crate::protocol_interface::{decrypt_envelope_for_recipient, encrypt_envelope_for_recipient};
+use crate::app::{AppContext, atomic_write};
+use crate::commands::PlanPrinter;
+use crate::result::Result;
 use clap::{Args, Subcommand};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use syft_crypto_protocol::datasite::bytes::{
+    BytesReadOpts, BytesWriteOpts, read_bytes, write_bytes,
+};
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum BytesCommand {
@@ -47,6 +44,18 @@ pub(crate) struct BytesWriteArgs {
     pub(crate) hint: Option<String>,
 }
 
+impl From<&BytesWriteArgs> for BytesWriteOpts {
+    fn from(args: &BytesWriteArgs) -> Self {
+        Self {
+            relative: args.relative.clone(),
+            recipients: args.recipients.clone(),
+            plaintext: args.plaintext,
+            overwrite: args.overwrite,
+            hint: args.hint.clone(),
+        }
+    }
+}
+
 #[derive(Args, Debug)]
 pub(crate) struct BytesReadArgs {
     /// Relative path within the datasite tree
@@ -66,6 +75,16 @@ pub(crate) struct BytesReadArgs {
     pub(crate) output: Option<PathBuf>,
 }
 
+impl From<&BytesReadArgs> for BytesReadOpts {
+    fn from(args: &BytesReadArgs) -> Self {
+        Self {
+            relative: args.relative.clone(),
+            identity: args.identity.clone(),
+            require_envelope: args.require_envelope,
+        }
+    }
+}
+
 pub(crate) fn handle_bytes_command(context: &AppContext, command: BytesCommand) -> Result<()> {
     match command {
         BytesCommand::Write(args) => handle_bytes_write(context, args),
@@ -75,20 +94,52 @@ pub(crate) fn handle_bytes_command(context: &AppContext, command: BytesCommand) 
 
 fn handle_bytes_write(context: &AppContext, args: BytesWriteArgs) -> Result<()> {
     let plan = PlanPrinter::stderr("bytes write");
-    let encrypted = !args.recipients.is_empty() && !args.plaintext;
-    plan.field("relative path", args.relative.display())
-        .field("mode", if encrypted { "encrypted" } else { "plaintext" })
-        .bool("overwrite existing", args.overwrite);
-
-    let data_path = resolve_data_path(context, &args.relative);
-    if data_path.exists() && !args.overwrite {
-        return Err(format!(
-            "path {} already exists (use --overwrite to replace)",
-            data_path.display()
+    let opts = BytesWriteOpts::from(&args);
+    let data = read_write_input(&args, &plan)?;
+    plan.field("relative path", opts.relative.display())
+        .field(
+            "mode",
+            if !opts.recipients.is_empty() && !opts.plaintext {
+                "encrypted"
+            } else {
+                "plaintext"
+            },
         )
-        .into());
+        .bool("overwrite existing", opts.overwrite);
+
+    let outcome = write_bytes(context, &opts, &data)?;
+    plan.field("bytes written", outcome.bytes_written)
+        .field("destination", outcome.destination.display());
+    Ok(())
+}
+
+fn handle_bytes_read(context: &AppContext, args: BytesReadArgs) -> Result<()> {
+    let plan = PlanPrinter::stderr("bytes read");
+    let opts = BytesReadOpts::from(&args);
+    plan.field("relative path", opts.relative.display());
+    let output = read_bytes(context, &opts)?;
+    plan.field("datasite source", output.source.display())
+        .info(if output.envelope_used {
+            "decrypted envelope"
+        } else {
+            "read plaintext"
+        });
+
+    match &args.output {
+        Some(path) => {
+            atomic_write(path, &output.plaintext)?;
+            plan.field("wrote output to", path.display());
+        }
+        None => {
+            plan.info("writing plaintext to stdout");
+            io::stdout().write_all(&output.plaintext)?;
+        }
     }
 
+    Ok(())
+}
+
+fn read_write_input(args: &BytesWriteArgs, plan: &PlanPrinter) -> Result<Vec<u8>> {
     let mut data = Vec::new();
     match &args.input {
         Some(path) => {
@@ -104,95 +155,7 @@ fn handle_bytes_write(context: &AppContext, args: BytesWriteArgs) -> Result<()> 
     if data.is_empty() {
         plan.info("warning: zero-byte payload");
     }
-
-    let payload = if encrypted {
-        if args.recipients.len() != 1 {
-            return Err("exactly one --recipient is supported for encryption".into());
-        }
-        let sender_identity = resolve_identity(None, &context.vault_path)?;
-        plan.field("sender identity", &sender_identity);
-        let recipient_identity = args.recipients[0].clone();
-        plan.field("recipient", &recipient_identity);
-
-        let sender_keys = load_private_keys_for_identity(context, &sender_identity)?;
-        let recipient_bundle =
-            resolve_recipient_bundle(context, &sender_keys, &sender_identity, &recipient_identity)?;
-        let hint = args.hint.clone().or_else(|| {
-            args.relative
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-        });
-        encrypt_envelope_for_recipient(
-            &sender_identity,
-            &sender_keys,
-            &recipient_identity,
-            &recipient_bundle,
-            &data,
-            hint.as_deref(),
-        )?
-    } else {
-        if args.plaintext && !args.recipients.is_empty() {
-            plan.info("note: --plaintext provided – recipients will be ignored");
-        }
-        data
-    };
-
-    atomic_write(&data_path, &payload)?;
-    plan.field("bytes written", payload.len())
-        .field("destination", data_path.display());
-    Ok(())
-}
-
-fn handle_bytes_read(context: &AppContext, args: BytesReadArgs) -> Result<()> {
-    let plan = PlanPrinter::stderr("bytes read");
-    plan.field("relative path", args.relative.display());
-    let data_path = resolve_data_path(context, &args.relative);
-    plan.field("datasite source", data_path.display());
-
-    let identity = resolve_identity(args.identity.as_deref(), &context.vault_path)?;
-    plan.field("using identity", &identity);
-
-    let bytes = fs::read(&data_path)?;
-    let (plaintext, envelope_used) = match parse_optional_envelope(&bytes)? {
-        Some(parsed) => {
-            let recipient_keys = load_private_keys_for_identity(context, &identity)?;
-            let sender_bundle = resolve_sender_bundle_for_decrypt(context, &parsed)?;
-            let plaintext = decrypt_envelope_for_recipient(
-                &identity,
-                &recipient_keys,
-                &sender_bundle,
-                &parsed,
-            )?;
-            (plaintext, true)
-        }
-        None => {
-            if args.require_envelope {
-                return Err(
-                    format!("{} does not contain an SYC envelope", data_path.display()).into(),
-                );
-            }
-            (bytes, false)
-        }
-    };
-
-    if envelope_used {
-        plan.info("detected SYC envelope – returning decrypted plaintext");
-    } else {
-        plan.info("returning plaintext without envelope");
-    }
-
-    match &args.output {
-        Some(path) => {
-            atomic_write(path, &plaintext)?;
-            plan.field("wrote output to", path.display());
-        }
-        None => {
-            plan.info("writing plaintext to stdout");
-            io::stdout().write_all(&plaintext)?;
-        }
-    }
-
-    Ok(())
+    Ok(data)
 }
 
 #[cfg(test)]

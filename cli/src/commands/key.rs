@@ -1,13 +1,15 @@
 use crate::app::{
-    AppContext, Result, bundle_path_for_identity, ensure_vault_layout, expand_home,
+    AppContext, bundle_path_for_identity, ensure_vault_layout, expand_home,
     fallback_identity_from_path, key_path_for_identity, read_identity_from_key, resolve_data_path,
 };
 use crate::commands::PlanPrinter;
-use crate::protocol_interface::{generate_identity_material, parse_public_bundle};
+use crate::protocol_interface::generate_identity_material;
+use crate::result::Result;
 use clap::{Args, Subcommand};
 use serde_json::{Value, json, to_string_pretty};
 use std::fs;
 use std::path::PathBuf;
+use syft_crypto_protocol::datasite::crypto::parse_public_bundle;
 
 /// Identity and key-management subcommands.
 #[derive(Subcommand, Debug)]

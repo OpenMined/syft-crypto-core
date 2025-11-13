@@ -1,25 +1,25 @@
-mod bytes;
-mod crypto;
+pub mod bytes;
 mod file;
 mod key;
 mod vault;
 
 use clap::{Parser, Subcommand};
 use std::fmt::{self, Display};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use crate::app::{AppContext, Result, detect_single_identity, yes_no};
-use syft_crypto_protocol::envelope::{ParsedEnvelope, has_syc_magic, parse_envelope};
+use crate::app::{AppContext, yes_no};
+use crate::result::Result;
 
 pub(crate) use bytes::BytesCommand;
 pub(crate) use file::FileCommand;
 pub(crate) use key::KeyCommand;
+pub(crate) use syft_crypto_protocol::datasite::context::resolve_identity;
 pub(crate) use vault::VaultCommand;
 
 /// Syft Crypto (syc) CLI – manage Signal-compatible post-quantum keys and files.
 #[derive(Parser, Debug)]
 #[command(name = "syc", version, about = "Syft Crypto CLI (syc)")]
-pub(crate) struct Cli {
+pub struct Cli {
     /// Override the default vault directory (~/.syc)
     #[arg(
         global = true,
@@ -80,8 +80,14 @@ pub(crate) fn handle_command(context: &AppContext, command: Command) -> Result<(
     }
 }
 
+#[derive(Clone, Copy)]
+enum PlanChannel {
+    Stdout,
+    Stderr,
+}
+
 pub(crate) struct PlanPrinter {
-    stderr: bool,
+    channel: PlanChannel,
 }
 
 impl PlanPrinter {
@@ -90,22 +96,25 @@ impl PlanPrinter {
     }
 
     pub(crate) fn stdout(title: &str) -> Self {
-        let printer = Self { stderr: false };
+        let printer = Self {
+            channel: PlanChannel::Stdout,
+        };
         printer.emit(format_args!("[plan] {}", title));
         printer
     }
 
     pub(crate) fn stderr(title: &str) -> Self {
-        let printer = Self { stderr: true };
+        let printer = Self {
+            channel: PlanChannel::Stderr,
+        };
         printer.emit(format_args!("[plan] {}", title));
         printer
     }
 
     fn emit(&self, args: fmt::Arguments<'_>) {
-        if self.stderr {
-            eprintln!("{}", args);
-        } else {
-            println!("{}", args);
+        match self.channel {
+            PlanChannel::Stdout => println!("{}", args),
+            PlanChannel::Stderr => eprintln!("{}", args),
         }
     }
 
@@ -128,22 +137,6 @@ impl PlanPrinter {
     pub(crate) fn info(&self, message: &str) -> &Self {
         self.emit(format_args!("  {}", message));
         self
-    }
-}
-
-pub(crate) fn resolve_identity(provided: Option<&str>, vault: &Path) -> Result<String> {
-    match provided {
-        Some(identity) => Ok(identity.to_owned()),
-        None => detect_single_identity(vault),
-    }
-}
-
-pub(crate) fn parse_optional_envelope(bytes: &[u8]) -> Result<Option<ParsedEnvelope>> {
-    if has_syc_magic(bytes) {
-        let parsed = parse_envelope(bytes)?;
-        Ok(Some(parsed))
-    } else {
-        Ok(None)
     }
 }
 

@@ -1,3 +1,4 @@
+pub mod datasite;
 pub mod did_utils;
 pub mod encryption;
 pub mod envelope;

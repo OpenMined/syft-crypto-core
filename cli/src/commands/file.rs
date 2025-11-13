@@ -1,21 +1,17 @@
 use crate::app::{
-    AppContext, Result, atomic_write, ensure_vault_layout, resolve_data_path, resolve_shadow_path,
-    yes_no,
+    AppContext, atomic_write, ensure_vault_layout, resolve_data_path, resolve_shadow_path, yes_no,
 };
-use crate::commands::{
-    PlanPrinter,
-    crypto::{
-        load_cached_bundle, load_private_keys_for_identity, resolve_recipient_bundle,
-        resolve_sender_bundle_for_decrypt,
-    },
-    parse_optional_envelope, resolve_identity,
-};
-use crate::protocol_interface::{
-    decrypt_envelope_for_recipient, encrypt_envelope_for_recipient, inspect_ciphertext,
-};
+use crate::commands::{PlanPrinter, resolve_identity};
+use crate::protocol_interface::inspect_ciphertext;
+use crate::result::Result;
 use clap::{Args, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
+use syft_crypto_protocol::datasite::crypto::{
+    decrypt_envelope_for_recipient, encrypt_envelope_for_recipient, load_cached_bundle,
+    load_private_keys_for_identity, parse_optional_envelope, resolve_recipient_bundle,
+    resolve_sender_bundle_for_decrypt,
+};
 use syft_crypto_protocol::envelope::{CURRENT_VERSION, MAGIC, ParsedEnvelope, verify_signature};
 
 /// File and path subcommands.

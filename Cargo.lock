@@ -1758,6 +1758,7 @@ dependencies = [
 name = "syft-crypto-protocol"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64",
  "bip39",
  "chacha20poly1305",
