@@ -32,6 +32,8 @@ serde_jcs = "0.1"
 rand_chacha.workspace = true
 tokio.workspace = true
 tempfile.workspace = true
+flate2 = "1.0"
+tar = "0.4"
 
 [lib]
 name = "syft_crypto_protocol"

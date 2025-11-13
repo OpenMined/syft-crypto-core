@@ -16,10 +16,11 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 const FILE_HKDF_SALT: &[u8] = b"syc-crypto-core:pqxdh:file";
-const FILE_KEY_INFO: &[u8] = b"syc-file-key";
 const FILE_AAD: &[u8] = b"syc-file-v1";
 // Serialized libsignal X25519 public keys include a 1-byte key-type tag.
 const X25519_PUBLIC_KEY_LEN: usize = 33;
+// Wrapped key format: nonce (24) + encrypted_key (32) + auth_tag (16)
+const WRAPPED_KEY_SIZE: usize = 72;
 
 /// File cipher suite advertised in envelope metadata.
 pub const FILE_CIPHER_SUITE: &str = "xchacha20poly1305-v1";
@@ -32,8 +33,8 @@ pub struct EncryptionRecipient<'a> {
 
 /// Encrypt plaintext bytes for the provided recipients, returning a fully formed SYC envelope.
 ///
-/// Currently, multi-recipient envelopes are not supported – the function will return an
-/// error if more than one recipient is supplied.
+/// Supports multiple recipients - the file is encrypted once with a random key, then that key
+/// is wrapped separately for each recipient using PQXDH.
 pub fn encrypt_message<R: CryptoRng + Rng>(
     sender_identity: &str,
     sender_keys: &SyftPrivateKeys,
@@ -45,23 +46,48 @@ pub fn encrypt_message<R: CryptoRng + Rng>(
     if recipients.is_empty() {
         return Err("at least one recipient is required".into());
     }
-    if recipients.len() > 1 {
-        return Err("multi-recipient envelopes are not yet supported".into());
-    }
 
     let sender_public_bundle = sender_keys.to_public_bundle(rng)?;
-    let EncryptionRecipient { identity, bundle } = &recipients[0];
 
-    let (shared_material, wrapping) =
-        derive_sender_shared_material(sender_keys, identity, bundle, rng)?;
-    let file_key = Zeroizing::new(derive_file_key(shared_material.as_ref())?);
+    // Generate a random file encryption key
+    let file_key = Zeroizing::new({
+        let mut key = [0u8; 32];
+        rng.fill_bytes(&mut key);
+        key
+    });
+
+    // Encrypt the file / the payload once with the generated random key
     let mut file_nonce = Zeroizing::new([0u8; 24]);
     rng.fill_bytes(file_nonce.as_mut());
     let nonce_b64 = URL_SAFE_NO_PAD.encode(file_nonce.as_ref());
     let ciphertext = encrypt_payload(&file_key, &file_nonce, plaintext)?;
 
-    let recipient_vec = vec![(identity.to_string(), (*bundle).clone())];
-    let wrappings = vec![wrapping];
+    // Wrap file key for each recipient (Key Encapsulation Mechanism)
+    let mut recipient_vec = Vec::with_capacity(recipients.len());
+    let mut wrappings = Vec::with_capacity(recipients.len());
+
+    for recipient in recipients {
+        let (pqxdh_material, mut wrapping_info) =
+            derive_sender_shared_material(sender_keys, recipient.identity, recipient.bundle, rng)?;
+
+        // Wrap the file key using PQXDH material
+        let wrapped_key = wrap_file_key(pqxdh_material.as_ref(), &file_key, rng)?;
+
+        // Decode the existing kyber ciphertext from the wrapping
+        let kyber_ct = URL_SAFE_NO_PAD
+            .decode(&wrapping_info.wrap_ciphertext)
+            .map_err(|_| KeyError::InvalidFormat)?;
+
+        // Combine: wrapped_key (72 bytes) || kyber_ct (~1568 bytes)
+        let mut combined = wrapped_key;
+        combined.extend_from_slice(&kyber_ct);
+
+        // Update wrapping with combined data
+        wrapping_info.wrap_ciphertext = URL_SAFE_NO_PAD.encode(&combined);
+
+        recipient_vec.push((recipient.identity.to_string(), recipient.bundle.clone()));
+        wrappings.push(wrapping_info);
+    }
 
     let payload = EnvelopePayload {
         ciphertext: &ciphertext,
@@ -128,9 +154,32 @@ pub fn decrypt_message(
     let mut nonce = Zeroizing::new([0u8; 24]);
     nonce.copy_from_slice(&nonce_bytes);
 
-    let shared_material =
-        derive_recipient_shared_material(recipient_keys, sender_bundle, wrapping)?;
-    let file_key = Zeroizing::new(derive_file_key(shared_material.as_ref())?);
+    // Decode wrapping ciphertext: wrapped_key (72 bytes) || kyber_ct
+    let wrap_ciphertext_combined = URL_SAFE_NO_PAD
+        .decode(&wrapping.wrap_ciphertext)
+        .map_err(|_| KeyError::InvalidFormat)?;
+
+    if wrap_ciphertext_combined.len() < WRAPPED_KEY_SIZE {
+        return Err(KeyError::InvalidFormat);
+    }
+
+    // Split wrapped file key and kyber ciphertext
+    let (wrapped_file_key, kyber_ct) = wrap_ciphertext_combined.split_at(WRAPPED_KEY_SIZE);
+
+    // Create modified wrapping with only kyber_ct for PQXDH derivation
+    let pqxdh_wrapping = WrappingInfo {
+        recipient_identity: wrapping.recipient_identity.clone(),
+        device_label: wrapping.device_label.clone(),
+        wrap_ephemeral_public: wrapping.wrap_ephemeral_public.clone(),
+        wrap_ciphertext: URL_SAFE_NO_PAD.encode(kyber_ct),
+    };
+
+    // Derive PQXDH shared material
+    let pqxdh_material =
+        derive_recipient_shared_material(recipient_keys, sender_bundle, &pqxdh_wrapping)?;
+
+    // Unwrap file key using PQXDH material
+    let file_key = unwrap_file_key(pqxdh_material.as_ref(), wrapped_file_key)?;
 
     let cipher = XChaCha20Poly1305::new(Key::from_slice(&*file_key));
     cipher
@@ -295,14 +344,6 @@ fn validate_pq_ciphertext(recipient_keys: &SyftPrivateKeys, ciphertext: &[u8]) -
     Ok(())
 }
 
-fn derive_file_key(material: &[u8]) -> Result<[u8; 32]> {
-    let hkdf = Hkdf::<Sha256>::new(Some(FILE_HKDF_SALT), material);
-    let mut key = [0u8; 32];
-    hkdf.expand(FILE_KEY_INFO, &mut key)
-        .map_err(|_| KeyError::HkdfError)?;
-    Ok(key)
-}
-
 fn encrypt_payload(key: &[u8; 32], nonce: &[u8; 24], plaintext: &[u8]) -> Result<Vec<u8>> {
     // libsignal's Rust bindings currently expose PQXDH/session layers but do not provide
     // an attachment/file cipher helper. Until that API exists upstream we locally reuse the
@@ -317,4 +358,77 @@ fn encrypt_payload(key: &[u8; 32], nonce: &[u8; 24], plaintext: &[u8]) -> Result
             },
         )
         .map_err(|_| "file encryption failed".into())
+}
+
+const KEY_WRAP_AAD: &[u8] = b"syc-key-wrap-v1";
+const KEY_WRAP_INFO: &[u8] = b"syc-wrap-key";
+
+/// Derives a wrapping key from PQXDH shared material and wraps the file key.
+/// Returns: nonce (24 bytes) || wrapped_key (32 bytes plaintext + 16 bytes auth tag) = 72 bytes total
+fn wrap_file_key<R: CryptoRng + Rng>(
+    pqxdh_material: &[u8],
+    file_key: &[u8; 32],
+    rng: &mut R,
+) -> Result<Vec<u8>> {
+    // Derive wrapping key from PQXDH material using HKDF
+    let hkdf = Hkdf::<Sha256>::new(Some(FILE_HKDF_SALT), pqxdh_material);
+    let mut wrapping_key = Zeroizing::new([0u8; 32]);
+    hkdf.expand(KEY_WRAP_INFO, wrapping_key.as_mut())
+        .map_err(|_| KeyError::HkdfError)?;
+
+    // Generate random nonce
+    let mut nonce = Zeroizing::new([0u8; 24]);
+    rng.fill_bytes(nonce.as_mut());
+
+    // Encrypt file key with wrapping key
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(&*wrapping_key));
+    let mut ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&*nonce),
+            Payload {
+                msg: file_key,
+                aad: KEY_WRAP_AAD,
+            },
+        )
+        .map_err(|_| "key wrapping failed")?;
+
+    // Return nonce || ciphertext+tag
+    let mut result = nonce.to_vec();
+    result.append(&mut ciphertext);
+    Ok(result) // WRAPPED_KEY_SIZE bytes
+}
+
+/// Unwraps file encryption key using PQXDH shared material.
+/// Input: nonce (24 bytes) || wrapped_key (48 bytes with tag)
+fn unwrap_file_key(pqxdh_material: &[u8], wrapped_data: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
+    if wrapped_data.len() != WRAPPED_KEY_SIZE {
+        return Err(KeyError::InvalidFormat);
+    }
+
+    // Split nonce and ciphertext
+    let (nonce_bytes, ciphertext) = wrapped_data.split_at(24);
+    let mut nonce = Zeroizing::new([0u8; 24]);
+    nonce.copy_from_slice(nonce_bytes);
+
+    // Derive wrapping key from PQXDH material
+    let hkdf = Hkdf::<Sha256>::new(Some(FILE_HKDF_SALT), pqxdh_material);
+    let mut wrapping_key = Zeroizing::new([0u8; 32]);
+    hkdf.expand(KEY_WRAP_INFO, wrapping_key.as_mut())
+        .map_err(|_| KeyError::HkdfError)?;
+
+    // Decrypt file key
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(&*wrapping_key));
+    let file_key_bytes = cipher
+        .decrypt(
+            XNonce::from_slice(&*nonce),
+            Payload {
+                msg: ciphertext,
+                aad: KEY_WRAP_AAD,
+            },
+        )
+        .map_err(|_| KeyError::InvalidSignature)?;
+
+    let mut file_key = Zeroizing::new([0u8; 32]);
+    file_key.copy_from_slice(&file_key_bytes);
+    Ok(file_key)
 }
