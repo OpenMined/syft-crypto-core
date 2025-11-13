@@ -16,7 +16,7 @@ use crate::protocol_interface::{
 use clap::{Args, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
-use syft_crypto_protocol::envelope::{CURRENT_VERSION, MAGIC, ParsedEnvelope};
+use syft_crypto_protocol::envelope::{CURRENT_VERSION, MAGIC, ParsedEnvelope, verify_signature};
 
 /// File and path subcommands.
 #[derive(Subcommand, Debug)]
@@ -397,6 +397,18 @@ fn handle_file_inspect(context: &AppContext, args: FileInspectArgs) -> Result<()
             parsed.prelude.sender.identity, parsed.prelude.sender.ik_fingerprint
         );
         report_sender_consistency(context, &parsed)?;
+        match resolve_sender_bundle_for_decrypt(context, &parsed) {
+            Ok(bundle) => match verify_signature(&parsed, &bundle.signal_identity_public_key) {
+                Ok(()) => println!("  signature: valid (sender bundle cached)"),
+                Err(_) => println!("  signature: INVALID (signature mismatch)"),
+            },
+            Err(err) => {
+                println!(
+                    "  signature: unable to verify ({}); run `syc key import` for sender?",
+                    err
+                );
+            }
+        }
         println!("  recipients ({}):", parsed.prelude.recipients.len());
         for recipient in &parsed.prelude.recipients {
             let identity = recipient

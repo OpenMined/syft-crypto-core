@@ -12,7 +12,7 @@ use hkdf::Hkdf;
 use libsignal_protocol::{KeyPair, PublicKey};
 use rand::{CryptoRng, Rng};
 use sha2::Sha256;
-use subtle::ConstantTimeEq;
+use subtle::{Choice, ConstantTimeEq};
 use zeroize::Zeroizing;
 
 const FILE_HKDF_SALT: &[u8] = b"syc-crypto-core:pqxdh:file";
@@ -122,9 +122,10 @@ pub fn decrypt_message(
         .as_bytes()
         .ct_eq(parsed.prelude.sender.ik_fingerprint.as_bytes())
         .unwrap_u8();
-
-    let combined = (signature_valid as u8) & (envelope_signature_valid as u8) & fingerprint_match;
-    if combined != 1 {
+    let combined = Choice::from(signature_valid as u8)
+        & Choice::from(envelope_signature_valid as u8)
+        & Choice::from(fingerprint_match);
+    if combined.ct_eq(&Choice::from(1)).unwrap_u8() != 1 {
         return Err(KeyError::InvalidSignature);
     }
 
@@ -132,12 +133,17 @@ pub fn decrypt_message(
         return Err(KeyError::InvalidFormat);
     }
 
-    let recipient_index = parsed
-        .prelude
-        .recipients
-        .iter()
-        .position(|info| info.identity.as_deref() == Some(recipient_identity))
-        .ok_or(KeyError::InvalidSignature)?;
+    let mut recipient_index = 0usize;
+    let mut match_choice = Choice::from(0);
+    for (idx, info) in parsed.prelude.recipients.iter().enumerate() {
+        let eq = ct_identity_match(info.identity.as_deref(), recipient_identity);
+        let eq_mask = usize::from(eq.unwrap_u8());
+        recipient_index = eq_mask * idx + (1 - eq_mask) * recipient_index;
+        match_choice |= eq;
+    }
+    if match_choice.unwrap_u8() == 0 {
+        return Err(KeyError::InvalidSignature);
+    }
 
     let wrapping = parsed
         .prelude
@@ -325,19 +331,15 @@ fn derive_recipient_shared_material(
 }
 
 fn validate_pq_ciphertext(recipient_keys: &SyftPrivateKeys, ciphertext: &[u8]) -> Result<()> {
-    if ciphertext.len() <= 1 {
+    let public_key_bytes = recipient_keys.pq_signed_pre_key().public_key.serialize();
+    if ciphertext.len() != public_key_bytes.len() {
         return Err(KeyError::InvalidFormat);
     }
-
-    // Serialized Kyber ciphertexts include a one-byte key-type tag. Ensure the tag matches the
-    // recipient's published PQ pre-key; libsignal will enforce the remaining structure as part of
-    // decapsulation.
-    let public_key_bytes = recipient_keys.pq_signed_pre_key().public_key.serialize();
     let expected_tag = public_key_bytes
         .first()
         .copied()
         .ok_or(KeyError::InvalidFormat)?;
-    if ciphertext[0] != expected_tag {
+    if ciphertext.first().copied() != Some(expected_tag) {
         return Err(KeyError::InvalidFormat);
     }
 
@@ -431,4 +433,24 @@ fn unwrap_file_key(pqxdh_material: &[u8], wrapped_data: &[u8]) -> Result<Zeroizi
     let mut file_key = Zeroizing::new([0u8; 32]);
     file_key.copy_from_slice(&file_key_bytes);
     Ok(file_key)
+}
+
+fn ct_identity_match(candidate: Option<&str>, target: &str) -> Choice {
+    match candidate {
+        Some(identity) => {
+            let lhs = identity.as_bytes();
+            let rhs = target.as_bytes();
+            let max_len = lhs.len().max(rhs.len());
+            let mut diff = 0u8;
+            for i in 0..max_len {
+                let l = *lhs.get(i).unwrap_or(&0);
+                let r = *rhs.get(i).unwrap_or(&0);
+                diff |= l ^ r;
+            }
+            let len_match = (lhs.len() as u64).ct_eq(&(rhs.len() as u64));
+            let bytes_match = diff.ct_eq(&0);
+            len_match & bytes_match
+        }
+        None => Choice::from(0),
+    }
 }
