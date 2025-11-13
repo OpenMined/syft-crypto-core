@@ -26,6 +26,10 @@ urlencoding.workspace = true
 tar = "0.4"
 flate2 = "1.0"
 
+[lib]
+name = "syft_crypto_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "syc"
 path = "src/main.rs"

@@ -1,8 +1,12 @@
 use crate::app::{AppContext, Result, atomic_write, resolve_data_path};
-use crate::commands::{PlanPrinter, parse_optional_envelope, resolve_identity};
-use crate::protocol_interface::{
-    build_stub_envelope, decrypt_allow_plaintext, decrypt_bytes, encrypt_bytes,
+use crate::commands::{
+    PlanPrinter,
+    crypto::{
+        load_private_keys_for_identity, resolve_recipient_bundle, resolve_sender_bundle_for_decrypt,
+    },
+    parse_optional_envelope, resolve_identity,
 };
+use crate::protocol_interface::{decrypt_envelope_for_recipient, encrypt_envelope_for_recipient};
 use clap::{Args, Subcommand};
 use std::fs;
 use std::io::{self, Read, Write};
@@ -102,29 +106,29 @@ fn handle_bytes_write(context: &AppContext, args: BytesWriteArgs) -> Result<()> 
     }
 
     let payload = if encrypted {
+        if args.recipients.len() != 1 {
+            return Err("exactly one --recipient is supported for encryption".into());
+        }
         let sender_identity = resolve_identity(None, &context.vault_path)?;
         plan.field("sender identity", &sender_identity);
-        if !args.recipients.is_empty() {
-            plan.field(
-                "recipients",
-                args.recipients
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
-        }
+        let recipient_identity = args.recipients[0].clone();
+        plan.field("recipient", &recipient_identity);
 
-        let ciphertext = encrypt_bytes(
+        let sender_keys = load_private_keys_for_identity(context, &sender_identity)?;
+        let recipient_bundle =
+            resolve_recipient_bundle(context, &sender_keys, &sender_identity, &recipient_identity)?;
+        let hint = args.hint.clone().or_else(|| {
+            args.relative
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        });
+        encrypt_envelope_for_recipient(
             &sender_identity,
-            args.recipients.first().map(|s| s.as_str()),
+            &sender_keys,
+            &recipient_identity,
+            &recipient_bundle,
             &data,
-        )?;
-        build_stub_envelope(
-            &sender_identity,
-            &args.recipients,
-            &ciphertext,
-            args.hint.as_deref(),
+            hint.as_deref(),
         )?
     } else {
         if args.plaintext && !args.recipients.is_empty() {
@@ -149,10 +153,17 @@ fn handle_bytes_read(context: &AppContext, args: BytesReadArgs) -> Result<()> {
     plan.field("using identity", &identity);
 
     let bytes = fs::read(&data_path)?;
-    let (plaintext, envelope_used) = match parse_optional_envelope(&bytes, false)? {
+    let (plaintext, envelope_used) = match parse_optional_envelope(&bytes)? {
         Some(parsed) => {
-            let result = decrypt_bytes(&identity, &parsed.ciphertext, false)?;
-            (result.plaintext, true)
+            let recipient_keys = load_private_keys_for_identity(context, &identity)?;
+            let sender_bundle = resolve_sender_bundle_for_decrypt(context, &parsed)?;
+            let plaintext = decrypt_envelope_for_recipient(
+                &identity,
+                &recipient_keys,
+                &sender_bundle,
+                &parsed,
+            )?;
+            (plaintext, true)
         }
         None => {
             if args.require_envelope {
@@ -160,8 +171,7 @@ fn handle_bytes_read(context: &AppContext, args: BytesReadArgs) -> Result<()> {
                     format!("{} does not contain an SYC envelope", data_path.display()).into(),
                 );
             }
-            let result = decrypt_allow_plaintext(&identity, &bytes)?;
-            (result.plaintext, false)
+            (bytes, false)
         }
     };
 

@@ -1,4 +1,5 @@
 mod bytes;
+mod crypto;
 mod file;
 mod key;
 mod vault;
@@ -8,9 +9,7 @@ use std::fmt::{self, Display};
 use std::path::{Path, PathBuf};
 
 use crate::app::{AppContext, Result, detect_single_identity, yes_no};
-use crate::protocol_interface::{
-    ParsedEnvelope, has_syc_magic, parse_envelope, verify_stub_signature,
-};
+use syft_crypto_protocol::envelope::{ParsedEnvelope, has_syc_magic, parse_envelope};
 
 pub(crate) use bytes::BytesCommand;
 pub(crate) use file::FileCommand;
@@ -139,13 +138,9 @@ pub(crate) fn resolve_identity(provided: Option<&str>, vault: &Path) -> Result<S
     }
 }
 
-pub(crate) fn parse_optional_envelope(
-    bytes: &[u8],
-    skip_checks: bool,
-) -> Result<Option<ParsedEnvelope>> {
+pub(crate) fn parse_optional_envelope(bytes: &[u8]) -> Result<Option<ParsedEnvelope>> {
     if has_syc_magic(bytes) {
         let parsed = parse_envelope(bytes)?;
-        verify_stub_signature(&parsed, skip_checks)?;
         Ok(Some(parsed))
     } else {
         Ok(None)

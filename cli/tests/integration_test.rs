@@ -95,6 +95,22 @@ fn simulate_workflow_matches_shell_script() -> Result<(), Box<dyn std::error::Er
         "alice@example.org",
     ])?;
 
+    // Alice imports Bob's public bundle so she can encrypt to him.
+    let bob_bundle_src = bob.join("datasites/bob@example.org/public/crypto/did.json");
+    let alice_bundle_inbox = alice.join("datasites/bob@example.org/public/crypto/did.json");
+    fs::create_dir_all(alice_bundle_inbox.parent().unwrap())?;
+    fs::copy(&bob_bundle_src, &alice_bundle_inbox)?;
+    run_cli(&[
+        "--vault",
+        alice_vault.to_str().unwrap(),
+        "key",
+        "import",
+        "--bundle",
+        "bob@example.org/public/crypto/did.json",
+        "--expected-identity",
+        "bob@example.org",
+    ])?;
+
     // Encrypt Alice's message relative to her datasite/shadow roots.
     run_cli(&[
         "--vault",

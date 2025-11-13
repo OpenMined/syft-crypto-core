@@ -4,6 +4,7 @@ use crate::protocol_interface;
 use std::fs;
 use std::path::PathBuf;
 use tempfile::tempdir;
+use syft_crypto_protocol::envelope::has_syc_magic;
 
 fn setup_context() -> (tempfile::TempDir, AppContext) {
     let base = tempdir().unwrap();
@@ -26,9 +27,17 @@ fn setup_context() -> (tempfile::TempDir, AppContext) {
 fn write_identity(context: &AppContext, identity: &str) {
     let keys_dir = context.vault_path.join("keys");
     fs::create_dir_all(&keys_dir).unwrap();
-    let key_path = keys_dir.join(format!("{}.key", identity));
     let material = protocol_interface::generate_identity_material(identity).unwrap();
-    fs::write(&key_path, material.key_file).unwrap();
+
+    let key_path = keys_dir.join(format!("{}.key", identity));
+    fs::write(&key_path, &material.key_file).unwrap();
+
+    let bundles_dir = context.vault_path.join("bundles");
+    fs::create_dir_all(&bundles_dir).unwrap();
+    let bundle_path = bundles_dir.join(format!("{}.json", identity));
+    let mut bundle = serde_json::to_vec_pretty(&material.public_bundle).unwrap();
+    bundle.push(b'\n');
+    fs::write(&bundle_path, bundle).unwrap();
 }
 
 #[test]
@@ -93,7 +102,7 @@ fn bytes_write_encrypted_and_read_back() {
     .unwrap();
 
     let envelope = fs::read(context.data_root.join("docs/encrypted.bin")).unwrap();
-    assert!(crate::protocol_interface::has_syc_magic(&envelope));
+    assert!(has_syc_magic(&envelope));
 
     let output_path = context.shadow_root.join("decrypted.bin");
     handle_bytes_command(
@@ -165,7 +174,7 @@ fn bytes_write_plaintext_flag_ignores_recipients() {
     let written = fs::read(context.data_root.join("docs/plain.txt")).unwrap();
     assert_eq!(written, b"plaintext");
     assert!(
-        !crate::protocol_interface::has_syc_magic(&written),
+        !has_syc_magic(&written),
         "plaintext writes should not produce envelopes"
     );
 }
