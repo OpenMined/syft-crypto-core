@@ -185,7 +185,11 @@ impl SyftRecoveryKey {
             return false;
         }
 
-        true
+        let mut seen = [false; 256];
+        for &byte in bytes {
+            seen[byte as usize] = true;
+        }
+        seen.iter().filter(|&&present| present).count() >= 8
     }
 
     /// Get raw bytes (for internal use only)
@@ -331,11 +335,10 @@ impl<T> DerefMut for Sensitive<T> {
 impl<T> Drop for Sensitive<T> {
     fn drop(&mut self) {
         unsafe {
-            // Drop the inner value first so any heap allocations are freed.
-            ManuallyDrop::drop(&mut self.0);
-            // Then zeroize the now-dropped memory to clear residual key material.
-            let ptr = (&mut self.0 as *mut ManuallyDrop<T>).cast::<u8>();
-            std::ptr::write_bytes(ptr, 0, std::mem::size_of::<T>());
+            let ptr = (&mut self.0 as *mut ManuallyDrop<T>).cast::<T>();
+            let value = ptr.read();
+            std::ptr::write_bytes(ptr.cast::<u8>(), 0, std::mem::size_of::<T>());
+            drop(value);
         }
     }
 }

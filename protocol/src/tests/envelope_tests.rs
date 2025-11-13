@@ -47,7 +47,55 @@ fn envelope_builds_and_parses() {
 
 #[test]
 fn align_to_block_rounds_up() {
-    assert_eq!(align_to_block(1, 4096), 4096);
-    assert_eq!(align_to_block(4096, 4096), 4096);
-    assert_eq!(align_to_block(4097, 4096), 8192);
+    assert_eq!(align_to_block(1, 4096).unwrap(), 4096);
+    assert_eq!(align_to_block(4096, 4096).unwrap(), 4096);
+    assert_eq!(align_to_block(4097, 4096).unwrap(), 8192);
+}
+
+#[test]
+fn align_to_block_detects_overflow() {
+    let result = align_to_block(usize::MAX, 2);
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_rejects_oversized_prelude() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(MAGIC);
+    bytes.push(CURRENT_VERSION);
+    bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+
+    let err = parse_envelope(&bytes).expect_err("should reject oversized prelude");
+    assert!(err.to_string().contains("prelude too large"));
+}
+
+#[test]
+fn parse_rejects_invalid_signature_length() {
+    let ciphertext = b"payload";
+    let envelope = build_stub_envelope("alice@example.org", &[], ciphertext, None)
+        .expect("build envelope");
+    let mut tampered = envelope.clone();
+
+    let mut cursor = MAGIC.len() + 1;
+    let prelude_len =
+        u32::from_le_bytes(tampered[cursor..cursor + 4].try_into().expect("len slice")) as usize;
+    cursor += 4;
+    let padded_len = align_to_block(prelude_len, PRELUDE_PAD).expect("alignment");
+    cursor += padded_len;
+
+    tampered[cursor..cursor + 2].copy_from_slice(&10u16.to_le_bytes());
+
+    let err = parse_envelope(&tampered).expect_err("should reject invalid signature len");
+    assert!(err.to_string().contains("invalid signature length"));
+}
+
+#[test]
+fn parse_rejects_ciphertext_length_mismatch() {
+    let ciphertext = b"ciphertext";
+    let mut envelope = build_stub_envelope("alice@example.org", &[], ciphertext, None)
+        .expect("build envelope");
+    envelope.pop().expect("non-empty envelope");
+
+    let err = parse_envelope(&envelope).expect_err("should reject ciphertext mismatch");
+    assert!(err.to_string().contains("ciphertext length mismatch"));
 }

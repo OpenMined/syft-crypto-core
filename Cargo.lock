@@ -1716,6 +1716,7 @@ dependencies = [
  "syft-crypto-protocol",
  "tar",
  "tempfile",
+ "urlencoding",
 ]
 
 [[package]]
@@ -1733,6 +1734,7 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "sha2",
+ "subtle",
  "tempfile",
  "thiserror",
  "tokio",

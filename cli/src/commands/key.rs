@@ -5,9 +5,9 @@ use crate::app::{
 use crate::commands::PlanPrinter;
 use crate::protocol_interface::{generate_identity_material, parse_public_bundle};
 use clap::{Args, Subcommand};
-use serde_json::{Value, to_string_pretty};
+use serde_json::{Value, json, to_string_pretty};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Identity and key-management subcommands.
 #[derive(Subcommand, Debug)]
@@ -182,8 +182,8 @@ fn handle_key_generate(context: &AppContext, args: KeyGenerateArgs) -> Result<()
     if args.dry_run {
         plan.info("dry-run: no files will be written");
     }
-    plan.info("TODO: derive identity key, signed pre-key, and PQ pre-key using libsignal")
-        .info("TODO: persist material in the configured vault and emit recovery bundle");
+    plan.info("derive recovery key + PQXDH material via syft-crypto-protocol")
+        .info("persist private JWKS into the vault and emit DID bundle artifacts");
 
     if args.dry_run {
         plan.info("dry-run complete: no changes were made");
@@ -208,7 +208,18 @@ fn handle_key_generate(context: &AppContext, args: KeyGenerateArgs) -> Result<()
     let generated = generate_identity_material(&args.identity)?;
 
     fs::write(&key_path, &generated.key_file)?;
-    println!("  wrote stub identity key material: {}", key_path.display());
+    println!(
+        "  wrote private key material for {}: {}",
+        args.identity,
+        key_path.display()
+    );
+    println!("  identity fingerprint: {}", generated.fingerprint);
+    println!("  DID identifier: {}", generated.did);
+    println!(
+        "  recovery key (hex): {}\n  recovery mnemonic: {}",
+        generated.recovery_key_hex, generated.recovery_key_mnemonic
+    );
+    println!("  write the recovery key down – it regenerates all private keys.");
 
     if let Some(bundle_out) = &args.bundle_out {
         let resolved = resolve_data_path(context, bundle_out);
@@ -218,7 +229,11 @@ fn handle_key_generate(context: &AppContext, args: KeyGenerateArgs) -> Result<()
         let mut bundle_body = to_string_pretty(&generated.public_bundle)?;
         bundle_body.push('\n');
         fs::write(&resolved, bundle_body)?;
-        println!("  exported stub bundle to {}", resolved.display());
+        println!(
+            "  exported DID document for {} to {}",
+            args.identity,
+            resolved.display()
+        );
     }
 
     Ok(())
@@ -239,12 +254,15 @@ fn handle_key_import(context: &AppContext, args: KeyImportArgs) -> Result<()> {
     }
     plan.bool("verification only", args.verify_only)
         .bool("force overwrite", args.force)
-        .info("TODO: verify libsignal signatures once real bundles are available");
+        .info("verify libsignal signatures + identity metadata");
 
     let bundle_body = fs::read_to_string(&bundle_path)?;
     let bundle_info = parse_public_bundle(&bundle_body)?;
     plan.field("bundle identity", &bundle_info.identity)
         .field("bundle fingerprint", &bundle_info.fingerprint);
+    if let Some(did) = &bundle_info.did {
+        plan.field("bundle DID", did);
+    }
 
     if let Some(expected) = args.expected_identity.as_deref()
         && expected != bundle_info.identity
@@ -388,36 +406,39 @@ fn handle_key_verify(context: &AppContext, args: KeyVerifyArgs) -> Result<()> {
     }
     plan.bool("verify only", args.verify_only)
         .bool("emit json", args.json)
-        .info("TODO: load bundle and validate both EC and PQ signatures")
-        .info("TODO: surface fingerprints and metadata to caller");
+        .info("verify DID signatures + surface metadata");
 
-    let body = read_bundle_body(&bundle_path)?;
-    if let Some(expected) = missing_expected_identity(&body, args.expected_identity.as_deref()) {
+    let body = fs::read_to_string(&bundle_path)?;
+    let bundle_info = parse_public_bundle(&body)?;
+
+    if let Some(expected) = args.expected_identity.as_deref()
+        && expected != bundle_info.identity
+    {
         println!(
-            "  warning: expected identity '{}' not mentioned in bundle",
-            expected
+            "  warning: bundle identity '{}' differs from expected '{}'",
+            bundle_info.identity, expected
         );
     }
 
     if args.json {
-        println!(
-            "{{\"bundle_path\":\"{}\",\"length\":{}}}",
-            bundle_path.display(),
-            body.len()
-        );
+        let summary = json!({
+            "bundle_path": bundle_path.display().to_string(),
+            "identity": bundle_info.identity,
+            "identity_fingerprint": bundle_info.fingerprint,
+            "did": bundle_info.did,
+            "length": body.len()
+        });
+        println!("{}", summary);
     } else {
+        println!("  identity: {}", bundle_info.identity);
+        if let Some(did) = &bundle_info.did {
+            println!("  did: {}", did);
+        }
+        println!("  fingerprint: {}", bundle_info.fingerprint);
         println!("  bundle size: {} bytes", body.len());
     }
 
     Ok(())
-}
-
-fn read_bundle_body(path: &Path) -> Result<String> {
-    Ok(fs::read_to_string(path)?)
-}
-
-fn missing_expected_identity<'a>(body: &str, expected: Option<&'a str>) -> Option<&'a str> {
-    expected.filter(|identity| !body.contains(*identity))
 }
 
 fn handle_key_backup(context: &AppContext, args: KeyBackupArgs) -> Result<()> {

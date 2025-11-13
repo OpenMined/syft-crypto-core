@@ -139,6 +139,38 @@ fn test_signature_verification_fails_with_wrong_key() {
 }
 
 #[test]
+fn test_signature_verification_checks_fingerprint() {
+    let sender_recovery_key = SyftRecoveryKey::generate();
+    let sender_sk = sender_recovery_key.derive_keys().unwrap();
+    let sender_pk_bundle = sender_sk.to_public_bundle(&mut rand::rng()).unwrap();
+
+    let envelope_bytes = syft_crypto_protocol::envelope::build_envelope(
+        "alice@example.com",
+        sender_sk.identity(),
+        &sender_pk_bundle,
+        &[],
+        b"fingerprint test",
+        None,
+        &mut rand::rng(),
+    )
+    .unwrap();
+
+    let mut parsed = syft_crypto_protocol::envelope::parse_envelope(&envelope_bytes).unwrap();
+    parsed.prelude.sender.ik_fingerprint = "0".repeat(64);
+
+    let err = syft_crypto_protocol::envelope::verify_signature(
+        &parsed,
+        sender_sk.identity().identity_key(),
+    )
+    .expect_err("fingerprint mismatch should fail");
+
+    assert!(
+        err.to_string().contains("fingerprint"),
+        "Error should mention fingerprint mismatch"
+    );
+}
+
+#[test]
 fn test_envelope_with_multiple_recipients() {
     let sender_recovery_key = SyftRecoveryKey::generate();
     let sender_sk = sender_recovery_key.derive_keys().unwrap();
@@ -863,17 +895,29 @@ fn test_envelope_padding_not_signed() {
     // This test demonstrates that padding can be modified without breaking signature
     // (because only prelude_bytes are signed, not the raw envelope bytes)
 
-    // We verify that the signature only covers prelude_bytes, not padding
-    // by checking that signature verification uses prelude_bytes field
-    let signature_valid = sender_sk
-        .identity()
-        .identity_key()
-        .public_key()
-        .verify_signature(&parsed.prelude_bytes, &parsed.signature);
+    // We verify that the signature only covers prelude metadata (plus domain separator),
+    // not the ciphertext or padding.
+    let mut message = Vec::new();
+    message.extend_from_slice(b"SYC1-PRELUDE");
+    message.push(syft_crypto_protocol::envelope::CURRENT_VERSION);
+    message.extend_from_slice(&parsed.prelude_bytes);
 
     assert!(
-        signature_valid,
-        "Signature should only verify against prelude_bytes, not full envelope"
+        sender_sk
+            .identity()
+            .identity_key()
+            .public_key()
+            .verify_signature(&message, &parsed.signature),
+        "Signature should verify when domain-separated prelude is provided"
+    );
+
+    assert!(
+        !sender_sk
+            .identity()
+            .identity_key()
+            .public_key()
+            .verify_signature(&parsed.prelude_bytes, &parsed.signature),
+        "Raw prelude should fail verification without domain separator"
     );
 }
 

@@ -241,15 +241,21 @@ fn simulate_workflow_matches_shell_script() -> Result<(), Box<dyn std::error::Er
     );
     assert_eq!(read_output.stdout, bytes_message);
 
-    // Tamper with Alice's bundle and ensure TOFU enforcement kicks in.
-    let mut tampered_value: Value = serde_json::from_str(&fs::read_to_string(&bob_bundle_inbox)?)?;
-    tampered_value
+    // Tamper with Alice's bundle by substituting Bob's public keys while claiming Alice's identity.
+    let bob_bundle_src = bob.join("datasites/bob@example.org/public/crypto/did.json");
+    let mut tampered_value: Value = serde_json::from_str(&fs::read_to_string(&bob_bundle_src)?)?;
+    let tampered_obj = tampered_value
         .as_object_mut()
-        .expect("bundle to be a JSON object")
-        .insert(
-            "identity_fingerprint".into(),
-            Value::String("stub-alice_example.org-tampered".into()),
-        );
+        .expect("bundle to be a JSON object");
+    tampered_obj.insert("identity".into(), Value::String("alice@example.org".into()));
+    tampered_obj.insert(
+        "identity_fingerprint".into(),
+        Value::String("bob-pretending-to-be-alice".into()),
+    );
+    tampered_obj.insert(
+        "id".into(),
+        Value::String("did:web:syftbox.net:alice%40example.org".into()),
+    );
     let tampered_path = bob.join("datasites/alice@example.org/public/crypto/did-tampered.json");
     let mut tampered_body = serde_json::to_vec_pretty(&tampered_value)?;
     tampered_body.push(b'\n');

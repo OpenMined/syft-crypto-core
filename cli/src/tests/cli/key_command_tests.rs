@@ -186,23 +186,17 @@ fn key_import_requires_force_when_cached_fingerprint_differs() {
     )
     .unwrap();
 
-    let mut tampered_value = baseline.public_bundle.clone();
-    tampered_value
-        .as_object_mut()
-        .unwrap()
-        .insert(
-            "identity_fingerprint".into(),
-            Value::String("stub-erin_example.org-tampered".into()),
-        );
-    let tampered_path = context.data_root.join("erin-tampered.json");
-    let mut tampered_body = serde_json::to_vec_pretty(&tampered_value).unwrap();
-    tampered_body.push(b'\n');
-    fs::write(&tampered_path, &tampered_body).unwrap();
+    // Generate a second bundle for the same identity (new fingerprint).
+    let updated = protocol_interface::generate_identity_material("erin@example.org").unwrap();
+    let mut updated_body = serde_json::to_vec_pretty(&updated.public_bundle).unwrap();
+    updated_body.push(b'\n');
+    let updated_path = context.data_root.join("erin-updated.json");
+    fs::write(&updated_path, &updated_body).unwrap();
 
     let err = handle_key_command(
         &context,
         KeyCommand::Import(KeyImportArgs {
-            bundle: PathBuf::from("erin-tampered.json"),
+            bundle: PathBuf::from("erin-updated.json"),
             expected_identity: Some("erin@example.org".into()),
             verify_only: false,
             force: false,
@@ -216,7 +210,7 @@ fn key_import_requires_force_when_cached_fingerprint_differs() {
     handle_key_command(
         &context,
         KeyCommand::Import(KeyImportArgs {
-            bundle: PathBuf::from("erin-tampered.json"),
+            bundle: PathBuf::from("erin-updated.json"),
             expected_identity: Some("erin@example.org".into()),
             verify_only: false,
             force: true,
@@ -231,7 +225,10 @@ fn key_import_requires_force_when_cached_fingerprint_differs() {
         cached_json
             .get("identity_fingerprint")
             .and_then(Value::as_str),
-        Some("stub-erin_example.org-tampered")
+        updated
+            .public_bundle
+            .get("identity_fingerprint")
+            .and_then(Value::as_str)
     );
 }
 
@@ -288,10 +285,13 @@ fn key_list_reports_empty_vault() {
 fn key_verify_handles_json_mode() {
     let (_tmp, context) = setup_context();
     let bundle_path = context.data_root.join("bundle.json");
-    fs::write(&bundle_path, "identity: alice").unwrap();
+    let generated = protocol_interface::generate_identity_material("alice@example.org").unwrap();
+    let mut body = serde_json::to_vec_pretty(&generated.public_bundle).unwrap();
+    body.push(b'\n');
+    fs::write(&bundle_path, &body).unwrap();
     let args = KeyVerifyArgs {
         bundle: PathBuf::from("bundle.json"),
-        expected_identity: Some("alice".into()),
+        expected_identity: Some("alice@example.org".into()),
         verify_only: false,
         json: true,
     };
@@ -302,10 +302,13 @@ fn key_verify_handles_json_mode() {
 fn key_verify_warns_when_expected_identity_missing() {
     let (_tmp, context) = setup_context();
     let bundle_path = context.data_root.join("bundle.json");
-    fs::write(&bundle_path, "placeholder").unwrap();
+    let generated = protocol_interface::generate_identity_material("carol@example.org").unwrap();
+    let mut body = serde_json::to_vec_pretty(&generated.public_bundle).unwrap();
+    body.push(b'\n');
+    fs::write(&bundle_path, &body).unwrap();
     let args = KeyVerifyArgs {
         bundle: PathBuf::from("bundle.json"),
-        expected_identity: Some("carol".into()),
+        expected_identity: Some("alice@example.org".into()),
         verify_only: false,
         json: false,
     };

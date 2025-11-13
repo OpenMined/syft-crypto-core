@@ -4,6 +4,7 @@ use libsignal_protocol::{IdentityKey, IdentityKeyPair};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use subtle::ConstantTimeEq;
 
 #[cfg(test)]
 use serde_json::json;
@@ -14,6 +15,10 @@ pub const MAGIC: &[u8; 4] = b"SYC1";
 pub const CURRENT_VERSION: u8 = 1;
 const PRELUDE_PAD: usize = 4096;
 const STUB_SIGNATURE: &[u8] = b"syc-stub-signature-v1";
+const ED25519_SIGNATURE_LEN: usize = 64;
+const MAX_PRELUDE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
+const MAX_RECIPIENTS: usize = 1000;
+const SIGNING_CONTEXT: &[u8] = b"SYC1-PRELUDE";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EnvelopePrelude {
@@ -100,7 +105,7 @@ pub fn build_stub_envelope(
     let prelude = build_stub_prelude(sender_identity, recipients, ciphertext.len(), filename_hint);
     let prelude_bytes = to_jcs_bytes(&prelude)?;
     let prelude_len = prelude_bytes.len();
-    let padded_len = align_to_block(prelude_len, PRELUDE_PAD);
+    let padded_len = align_to_block(prelude_len, PRELUDE_PAD)?;
 
     let signature = stub_signature(&prelude_bytes);
 
@@ -133,7 +138,14 @@ pub fn verify_stub_signature(parsed: &ParsedEnvelope, skip_checks: bool) -> Resu
         return Ok(());
     }
     let expected = stub_signature(&parsed.prelude_bytes);
-    if parsed.signature != expected {
+    if parsed.signature.len() != expected.len()
+        || parsed
+            .signature
+            .as_slice()
+            .ct_eq(expected.as_slice())
+            .unwrap_u8()
+            == 0
+    {
         return Err("SYCe signature verification failed (stub placeholder mismatch)".into());
     }
     Ok(())
@@ -216,9 +228,15 @@ fn stub_fingerprint(input: &str) -> String {
 }
 
 fn stub_signature(prelude_bytes: &[u8]) -> Vec<u8> {
-    let mut sig = Vec::with_capacity(STUB_SIGNATURE.len() + prelude_bytes.len().min(8));
-    sig.extend_from_slice(STUB_SIGNATURE);
-    sig.extend_from_slice(&prelude_bytes[..prelude_bytes.len().min(8)]);
+    let mut sig = vec![0u8; ED25519_SIGNATURE_LEN];
+    let prefix_len = STUB_SIGNATURE.len().min(ED25519_SIGNATURE_LEN);
+    sig[..prefix_len].copy_from_slice(&STUB_SIGNATURE[..prefix_len]);
+
+    let prelude_copy_len = ED25519_SIGNATURE_LEN.saturating_sub(prefix_len);
+    if prelude_copy_len > 0 {
+        let slice_len = prelude_bytes.len().min(prelude_copy_len);
+        sig[prefix_len..prefix_len + slice_len].copy_from_slice(&prelude_bytes[..slice_len]);
+    }
     sig
 }
 
@@ -251,23 +269,36 @@ fn validate_envelope_header(bytes: &[u8]) -> Result<()> {
 /// Parse the prelude section: length field, prelude data, and padding.
 ///
 /// Returns the prelude bytes (without padding) and the new cursor position.
-fn parse_prelude_section(bytes: &[u8], cursor: usize) -> Result<(Vec<u8>, usize)> {
+fn parse_prelude_section(bytes: &[u8], mut cursor: usize) -> Result<(Vec<u8>, usize)> {
+    if bytes.len() < cursor + 4 {
+        return Err("file truncated while reading SYC prelude length".into());
+    }
     // Read prelude length (4 bytes, little-endian)
     let prelude_len_bytes = &bytes[cursor..cursor + 4];
     let prelude_len = u32::from_le_bytes(prelude_len_bytes.try_into().unwrap()) as usize;
-    let mut cursor = cursor + 4;
+    cursor += 4;
+
+    if prelude_len > MAX_PRELUDE_SIZE {
+        return Err("prelude too large".into());
+    }
 
     // Calculate padded length (aligned to 4096-byte blocks)
-    let padded_len = align_to_block(prelude_len, PRELUDE_PAD);
+    let padded_len = align_to_block(prelude_len, PRELUDE_PAD)?;
 
     // Validate sufficient bytes available
-    if bytes.len() < cursor + padded_len {
+    let padded_end = cursor
+        .checked_add(padded_len)
+        .ok_or("file truncated while reading SYC prelude")?;
+    if bytes.len() < padded_end {
         return Err("file truncated while reading SYC prelude".into());
     }
 
     // Extract prelude data (excluding padding)
-    let prelude_bytes = bytes[cursor..cursor + prelude_len].to_vec();
-    cursor += padded_len; // Skip to end of padded section
+    let prelude_end = cursor
+        .checked_add(prelude_len)
+        .ok_or("file truncated while reading SYC prelude")?;
+    let prelude_bytes = bytes[cursor..prelude_end].to_vec();
+    cursor = padded_end; // Skip to end of padded section
 
     Ok((prelude_bytes, cursor))
 }
@@ -283,16 +314,26 @@ fn parse_signature_section(bytes: &[u8], cursor: usize) -> Result<(Vec<u8>, usiz
 
     // Read signature length (2 bytes, little-endian)
     let signature_len = u16::from_le_bytes(bytes[cursor..cursor + 2].try_into().unwrap()) as usize;
+    if signature_len != ED25519_SIGNATURE_LEN {
+        return Err(format!(
+            "invalid signature length: {} (expected {})",
+            signature_len, ED25519_SIGNATURE_LEN
+        )
+        .into());
+    }
     let mut cursor = cursor + 2;
 
     // Validate sufficient bytes for signature
-    if bytes.len() < cursor + signature_len {
+    let signature_end = cursor
+        .checked_add(signature_len)
+        .ok_or("file truncated while reading SYC signature")?;
+    if bytes.len() < signature_end {
         return Err("file truncated while reading SYC signature".into());
     }
 
     // Extract signature data
-    let signature = bytes[cursor..cursor + signature_len].to_vec();
-    cursor += signature_len;
+    let signature = bytes[cursor..signature_end].to_vec();
+    cursor = signature_end;
 
     Ok((signature, cursor))
 }
@@ -403,6 +444,15 @@ pub fn parse_envelope(bytes: &[u8]) -> Result<ParsedEnvelope> {
 
     // Deserialize and validate prelude JSON
     let prelude: EnvelopePrelude = from_jcs_bytes(&prelude_bytes)?;
+    let ciphertext_len = u64::try_from(ciphertext.len())
+        .map_err(|_| "ciphertext too large to fit in 64-bit length")?;
+    if ciphertext_len != prelude.cipher.ciphertext_len {
+        return Err(format!(
+            "ciphertext length mismatch: expected {}, got {}",
+            prelude.cipher.ciphertext_len, ciphertext_len
+        )
+        .into());
+    }
 
     Ok(ParsedEnvelope {
         prelude,
@@ -418,9 +468,10 @@ fn sign_prelude<R: rand::CryptoRng + rand::Rng>(
     identity_key_pair: &IdentityKeyPair,
     rng: &mut R,
 ) -> Result<Box<[u8]>> {
+    let message = signing_message(prelude_bytes);
     identity_key_pair
         .private_key()
-        .calculate_signature(prelude_bytes, rng)
+        .calculate_signature(&message, rng)
         .map_err(|e| format!("Failed to sign envelope prelude: {}", e).into())
 }
 
@@ -429,9 +480,18 @@ pub fn verify_signature(
     parsed_envelope: &ParsedEnvelope,
     sender_identity_key: &IdentityKey,
 ) -> Result<()> {
+    let expected_fingerprint = compute_key_fingerprint(&sender_identity_key.serialize());
+    if !fingerprints_match(
+        &expected_fingerprint,
+        &parsed_envelope.prelude.sender.ik_fingerprint,
+    ) {
+        return Err("sender fingerprint mismatch".into());
+    }
+
+    let message = signing_message(&parsed_envelope.prelude_bytes);
     let valid = sender_identity_key
         .public_key()
-        .verify_signature(&parsed_envelope.prelude_bytes, &parsed_envelope.signature);
+        .verify_signature(&message, &parsed_envelope.signature);
 
     if !valid {
         return Err("SYC envelope signature verification failed".into());
@@ -450,6 +510,15 @@ fn build_prelude(
     ciphertext_len: usize,
     filename_hint: Option<&str>,
 ) -> Result<EnvelopePrelude> {
+    if recipients.len() > MAX_RECIPIENTS {
+        return Err(format!(
+            "too many recipients: {} (max {})",
+            recipients.len(),
+            MAX_RECIPIENTS
+        )
+        .into());
+    }
+
     let created_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -465,23 +534,27 @@ fn build_prelude(
     };
 
     // Build recipient infos with real fingerprints
-    let recipients_infos: Vec<RecipientInfo> = recipients
-        .iter()
-        .map(|(recipient_identity, recipient_bundle)| {
-            let spk_fingerprint =
-                compute_key_fingerprint(&recipient_bundle.signal_signed_public_pre_key.serialize());
-            let pqspk_fingerprint =
-                compute_key_fingerprint(&recipient_bundle.signal_pq_public_pre_key.serialize());
-
-            RecipientInfo {
-                identity: Some(recipient_identity.clone()),
-                device_label: Some("default".into()), // set to "default" as a placeholder because the current implementation doesn't have a multi-device system yet
-                spk_fingerprint: Some(spk_fingerprint),
-                pqspk_fingerprint: Some(pqspk_fingerprint),
-                signed_prekey_id: Some(1), // Key rotation not yet supported => Always using ID 1
-            }
-        })
-        .collect();
+    let mut recipients_infos: Vec<RecipientInfo> = Vec::with_capacity(recipients.len());
+    for (recipient_identity, recipient_bundle) in recipients {
+        if !recipient_bundle.verify_signatures() {
+            return Err(format!(
+                "recipient bundle for {} failed signature verification",
+                recipient_identity
+            )
+            .into());
+        }
+        let spk_fingerprint =
+            compute_key_fingerprint(&recipient_bundle.signal_signed_public_pre_key.serialize());
+        let pqspk_fingerprint =
+            compute_key_fingerprint(&recipient_bundle.signal_pq_public_pre_key.serialize());
+        recipients_infos.push(RecipientInfo {
+            identity: Some(recipient_identity.clone()),
+            device_label: Some("default".into()), // set to "default" as a placeholder because the current implementation doesn't have a multi-device system yet
+            spk_fingerprint: Some(spk_fingerprint),
+            pqspk_fingerprint: Some(pqspk_fingerprint),
+            signed_prekey_id: Some(1), // Key rotation not yet supported => Always using ID 1
+        });
+    }
 
     // Build wrappings (stub data for now - TODO: will be replaced with real KEM data)
     // Note: Empty recipients is allowed for self-encryption or broadcast mode
@@ -495,14 +568,20 @@ fn build_prelude(
         })
         .collect();
 
-    // Compute recipient set fingerprint from all recipient identity fingerprints
-    // Use null byte separator to prevent collision (e.g., ["a,b","c"] vs ["a","b,c"])
+    // Compute recipient set fingerprint from all recipient identity fingerprints using length-prefixing
     let mut recipient_fps: Vec<String> = recipients
         .iter()
         .map(|(_, bundle)| compute_key_fingerprint(&bundle.signal_identity_public_key.serialize()))
         .collect();
     recipient_fps.sort();
-    let recipient_set_fpr = compute_key_fingerprint(recipient_fps.join("\0").as_bytes());
+    let mut combined = Vec::with_capacity(recipient_fps.len() * (std::mem::size_of::<u32>() + 64));
+    for fp in &recipient_fps {
+        let len_u32 = u32::try_from(fp.len())
+            .map_err(|_| "recipient fingerprint exceeds supported length")?;
+        combined.extend_from_slice(&len_u32.to_le_bytes());
+        combined.extend_from_slice(fp.as_bytes());
+    }
+    let recipient_set_fpr = compute_key_fingerprint(&combined);
 
     // Build cipher info metadata
     let cipher = CipherInfo {
@@ -575,6 +654,9 @@ pub fn build_envelope<R: rand::CryptoRng + rand::Rng>(
     if sender_identity_key_pair.identity_key() != &sender_public_bundle.signal_identity_public_key {
         return Err("identity key pair does not match public bundle".into());
     }
+    if !sender_public_bundle.verify_signatures() {
+        return Err("sender public bundle signatures are invalid".into());
+    }
 
     // Build the prelude with real fingerprints
     let prelude = build_prelude(
@@ -588,7 +670,7 @@ pub fn build_envelope<R: rand::CryptoRng + rand::Rng>(
     // Serialize prelude to canonical JSON
     let prelude_bytes = to_jcs_bytes(&prelude)?;
     let prelude_len = prelude_bytes.len();
-    let padded_len = align_to_block(prelude_len, PRELUDE_PAD);
+    let padded_len = align_to_block(prelude_len, PRELUDE_PAD)?;
 
     // Sign the prelude with sender's identity private key
     let signature = sign_prelude(&prelude_bytes, sender_identity_key_pair, rng)?;
@@ -626,16 +708,25 @@ pub fn build_envelope<R: rand::CryptoRng + rand::Rng>(
 /// # Examples
 ///
 /// ```text
-/// align_to_block(1, 4096)    → 4096    // Rounds up to 1 block
-/// align_to_block(4096, 4096) → 4096    // Already aligned
-/// align_to_block(4097, 4096) → 8192    // Rounds up to 2 blocks
-/// align_to_block(0, 4096)    → 4096    // Zero becomes 1 block
+/// align_to_block(1, 4096)?    → 4096    // Rounds up to 1 block
+/// align_to_block(4096, 4096)? → 4096    // Already aligned
+/// align_to_block(4097, 4096)? → 8192    // Rounds up to 2 blocks
+/// align_to_block(0, 4096)?    → 4096    // Zero becomes 1 block
 /// ```
-fn align_to_block(len: usize, block: usize) -> usize {
-    if len == 0 {
-        return block;
+fn align_to_block(len: usize, block: usize) -> Result<usize> {
+    if block == 0 {
+        return Err("block size must be non-zero".into());
     }
-    len.div_ceil(block) * block
+    if len == 0 {
+        return Ok(block);
+    }
+    let blocks = len
+        .checked_add(block - 1)
+        .ok_or("alignment calculation overflowed")?
+        / block;
+    blocks
+        .checked_mul(block)
+        .ok_or("alignment calculation overflowed".into())
 }
 
 /// Canonical label for RFC 8785 JSON Canonicalization Scheme.
@@ -654,6 +745,21 @@ pub fn from_jcs_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
         return Err("prelude JSON is not RFC 8785 canonical".into());
     }
     Ok(serde_json::from_value(value)?)
+}
+
+fn signing_message(prelude_bytes: &[u8]) -> Vec<u8> {
+    let mut message = Vec::with_capacity(SIGNING_CONTEXT.len() + 1 + prelude_bytes.len());
+    message.extend_from_slice(SIGNING_CONTEXT);
+    message.push(CURRENT_VERSION);
+    message.extend_from_slice(prelude_bytes);
+    message
+}
+
+fn fingerprints_match(expected: &str, actual: &str) -> bool {
+    if expected.len() != actual.len() {
+        return false;
+    }
+    expected.as_bytes().ct_eq(actual.as_bytes()).unwrap_u8() == 1
 }
 
 #[cfg(test)]
