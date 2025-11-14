@@ -1,6 +1,5 @@
 use crate::Result;
 use crate::keys::{SyftPublicKeyBundle, compute_key_fingerprint};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use libsignal_protocol::{IdentityKey, IdentityKeyPair};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -14,8 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const MAGIC: &[u8; 4] = b"SYC1";
 pub const CURRENT_VERSION: u8 = 1;
-const PRELUDE_PAD: usize = 4096;
-const STUB_SIGNATURE: &[u8] = b"syc-stub-signature-v1";
+pub const PRELUDE_PAD: usize = 4096;
 const ED25519_SIGNATURE_LEN: usize = 64;
 const MAX_PRELUDE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
 const MAX_RECIPIENTS: usize = 1000;
@@ -103,158 +101,7 @@ pub fn has_syc_magic(bytes: &[u8]) -> bool {
 }
 
 // ============================================================================
-// Stub Cryptographic Functions (TODO: Replace with real implementations)
-// ============================================================================
-
-/// Test helper used by protocol unit tests to build deterministic envelopes without invoking the
-/// real PQXDH stack. Not used by production code.
-pub fn build_stub_envelope(
-    sender_identity: &str,
-    recipients: &[String],
-    ciphertext: &[u8],
-    filename_hint: Option<&str>,
-) -> Result<Vec<u8>> {
-    let prelude = build_stub_prelude(sender_identity, recipients, ciphertext.len(), filename_hint);
-    let prelude_bytes = to_jcs_bytes(&prelude)?;
-    let prelude_len = prelude_bytes.len();
-    let padded_len = align_to_block(prelude_len, PRELUDE_PAD)?;
-
-    let signature = stub_signature(&prelude_bytes);
-
-    let mut out = Vec::with_capacity(
-        MAGIC.len()
-            + 1
-            + std::mem::size_of::<u32>()
-            + padded_len
-            + std::mem::size_of::<u16>()
-            + signature.len()
-            + ciphertext.len(),
-    );
-
-    out.extend_from_slice(MAGIC);
-    out.push(CURRENT_VERSION);
-    out.extend_from_slice(&u32::try_from(prelude_len)?.to_le_bytes());
-    out.extend_from_slice(&prelude_bytes);
-    if padded_len > prelude_len {
-        out.resize(out.len() + (padded_len - prelude_len), 0u8);
-    }
-    out.extend_from_slice(&u16::try_from(signature.len())?.to_le_bytes());
-    out.extend_from_slice(&signature);
-    out.extend_from_slice(ciphertext);
-
-    Ok(out)
-}
-
-pub fn verify_stub_signature(parsed: &ParsedEnvelope, skip_checks: bool) -> Result<()> {
-    if skip_checks {
-        return Ok(());
-    }
-    let expected = stub_signature(&parsed.prelude_bytes);
-    if parsed.signature.len() != expected.len()
-        || parsed
-            .signature
-            .as_slice()
-            .ct_eq(expected.as_slice())
-            .unwrap_u8()
-            == 0
-    {
-        return Err("SYCe signature verification failed (stub placeholder mismatch)".into());
-    }
-    Ok(())
-}
-
-fn build_stub_prelude(
-    sender_identity: &str,
-    recipients: &[String],
-    ciphertext_len: usize,
-    filename_hint: Option<&str>,
-) -> EnvelopePrelude {
-    let created_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let sender = SenderInfo {
-        identity: sender_identity.to_owned(),
-        ik_fingerprint: stub_fingerprint(sender_identity),
-    };
-
-    let recipients_infos = if recipients.is_empty() {
-        vec![RecipientInfo {
-            identity: None,
-            device_label: None,
-            spk_fingerprint: None,
-            pqspk_fingerprint: None,
-            signed_prekey_id: None,
-        }]
-    } else {
-        recipients
-            .iter()
-            .map(|recipient| RecipientInfo {
-                identity: Some(recipient.clone()),
-                device_label: Some("stub-device".into()),
-                spk_fingerprint: Some(stub_fingerprint(&(recipient.clone() + ":spk"))),
-                pqspk_fingerprint: Some(stub_fingerprint(&(recipient.clone() + ":pqspk"))),
-                signed_prekey_id: Some(1),
-            })
-            .collect()
-    };
-
-    let wrappings = recipients
-        .iter()
-        .map(|recipient| WrappingInfo {
-            recipient_identity: Some(recipient.clone()),
-            device_label: Some("stub-device".into()),
-            wrap_ephemeral_public: "stub-epk".into(),
-            wrap_ciphertext: "stub-kem-ciphertext".into(),
-        })
-        .collect::<Vec<_>>();
-
-    let cipher = CipherInfo {
-        suite: "xchacha20poly1305-v1".into(),
-        segment_count: 1,
-        last_segment_bytes: u32::try_from(ciphertext_len).unwrap_or(u32::MAX),
-        ciphertext_len: ciphertext_len as u64,
-        nonce: URL_SAFE_NO_PAD.encode([0u8; 24]),
-    };
-
-    let public_meta = filename_hint.map(|hint| PublicMeta {
-        filename_hint: Some(hint.to_owned()),
-    });
-
-    EnvelopePrelude {
-        version: 1,
-        canon: JCS_CANON_LABEL.to_string(),
-        created_at,
-        sender,
-        recipients: recipients_infos,
-        recipient_set_fpr: format!("stub-fpr-{}", recipients.len()),
-        wrappings,
-        cipher,
-        integrity: None,
-        public_meta,
-    }
-}
-
-fn stub_fingerprint(input: &str) -> String {
-    format!("stub-{}", input.replace('@', "_at_"))
-}
-
-fn stub_signature(prelude_bytes: &[u8]) -> Vec<u8> {
-    let mut sig = vec![0u8; ED25519_SIGNATURE_LEN];
-    let prefix_len = STUB_SIGNATURE.len().min(ED25519_SIGNATURE_LEN);
-    sig[..prefix_len].copy_from_slice(&STUB_SIGNATURE[..prefix_len]);
-
-    let prelude_copy_len = ED25519_SIGNATURE_LEN.saturating_sub(prefix_len);
-    if prelude_copy_len > 0 {
-        let slice_len = prelude_bytes.len().min(prelude_copy_len);
-        sig[prefix_len..prefix_len + slice_len].copy_from_slice(&prelude_bytes[..slice_len]);
-    }
-    sig
-}
-
-// ============================================================================
-// Real Cryptographic Functions
+// Cryptographic Functions
 // ============================================================================
 
 /// Validate envelope header: minimum size, magic bytes, and version.
@@ -436,9 +283,8 @@ fn parse_signature_section(bytes: &[u8], cursor: usize) -> Result<(Vec<u8>, usiz
 ///
 /// # See Also
 ///
-/// - `build_envelope()` - Creates envelopes with real cryptographic signatures
+/// - `build_envelope_with_wrappings()` - Creates envelopes with real signatures and PQXDH wrappings
 /// - `verify_signature()` - Verifies the envelope signature after parsing
-/// - `build_stub_envelope()` - Creates test envelopes with stub signatures
 pub fn parse_envelope(bytes: &[u8]) -> Result<ParsedEnvelope> {
     // Validate envelope header (magic bytes + version)
     validate_envelope_header(bytes)?;
@@ -622,11 +468,12 @@ fn build_prelude(
     })
 }
 
-/// Build a complete SYC envelope with real cryptographic signatures.
+/// Build a complete SYC envelope with real cryptographic signatures and PQXDH wrappings.
 ///
 /// This creates an envelope with:
 /// - Real fingerprints from actual public keys
 /// - Real Ed25519 signature of the prelude
+/// - Real PQXDH wrappings for key encapsulation
 /// - Proper envelope structure with magic, version, padding, etc.
 ///
 /// # Arguments
@@ -634,52 +481,16 @@ fn build_prelude(
 /// * `sender_identity_key_pair` - Sender's identity key pair for signing
 /// * `sender_public_bundle` - Sender's public key bundle
 /// * `recipients` - Vector of (identity, public_bundle) tuples for each recipient
-/// * `ciphertext` - The encrypted data to wrap in the envelope
-/// * `filename_hint` - Optional filename hint for metadata
+/// * `wrappings` - PQXDH key wrappings (ephemeral keys + Kyber ciphertext)
+/// * `payload` - Envelope payload with ciphertext and metadata
 /// * `rng` - Cryptographically secure random number generator
 ///
 /// # Returns
 /// The complete envelope bytes ready for storage/transmission
-fn build_stub_wrappings(recipients: &[(String, SyftPublicKeyBundle)]) -> Vec<WrappingInfo> {
-    recipients
-        .iter()
-        .map(|(recipient_identity, _)| WrappingInfo {
-            recipient_identity: Some(recipient_identity.clone()),
-            device_label: Some("default".into()),
-            wrap_ephemeral_public: "stub-epk".into(),
-            wrap_ciphertext: "stub-kem-ciphertext".into(),
-        })
-        .collect()
-}
-
-pub fn build_envelope<R: rand::CryptoRng + rand::Rng>(
-    sender_identity: &str,
-    sender_identity_key_pair: &IdentityKeyPair,
-    sender_public_bundle: &SyftPublicKeyBundle,
-    recipients: &[(String, SyftPublicKeyBundle)],
-    ciphertext: &[u8],
-    filename_hint: Option<&str>,
-    rng: &mut R,
-) -> Result<Vec<u8>> {
-    let stub_wrappings = build_stub_wrappings(recipients);
-    let nonce_b64 = URL_SAFE_NO_PAD.encode([0u8; 24]);
-    let payload = EnvelopePayload {
-        ciphertext,
-        filename_hint,
-        cipher_suite: "xchacha20poly1305-v1",
-        cipher_nonce_b64: &nonce_b64,
-    };
-    build_envelope_with_wrappings(
-        sender_identity,
-        sender_identity_key_pair,
-        sender_public_bundle,
-        recipients,
-        &stub_wrappings,
-        &payload,
-        rng,
-    )
-}
-
+///
+/// # Note
+/// This is typically called from `encrypt_message()` which handles PQXDH wrapping.
+/// Do not use this directly unless you're implementing custom encryption logic.
 pub fn build_envelope_with_wrappings<R: rand::CryptoRng + rand::Rng>(
     sender_identity: &str,
     sender_identity_key_pair: &IdentityKeyPair,

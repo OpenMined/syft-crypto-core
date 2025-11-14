@@ -30,19 +30,32 @@ fn round_trips_complex_value() {
 
 #[test]
 fn envelope_builds_and_parses() {
-    let ciphertext = b"STUB-CIPHERTEXT";
-    let envelope = build_stub_envelope(
+    use crate::{SyftRecoveryKey, encrypt_message, encryption::EncryptionRecipient};
+
+    let sender_sk = SyftRecoveryKey::generate().derive_keys().unwrap();
+    let recipient_sk = SyftRecoveryKey::generate().derive_keys().unwrap();
+    let recipient_bundle = recipient_sk.to_public_bundle(&mut rand::rng()).unwrap();
+
+    let plaintext = b"test-data";
+    let envelope = encrypt_message(
         "alice@example.org",
-        &[String::from("bob@example.org")],
-        ciphertext,
+        &sender_sk,
+        &[EncryptionRecipient {
+            identity: "bob@example.org",
+            bundle: &recipient_bundle,
+        }],
+        plaintext,
         None,
-    )
-    .expect("envelope build");
+        &mut rand::rng(),
+    ).unwrap();
+
     assert!(envelope.starts_with(MAGIC));
     let parsed = parse_envelope(&envelope).expect("parse");
     assert_eq!(parsed.prelude.sender.identity, "alice@example.org");
-    assert_eq!(parsed.ciphertext, ciphertext);
-    verify_stub_signature(&parsed, false).expect("signature verify");
+
+    // Verify real signature
+    crate::envelope::verify_signature(&parsed, sender_sk.identity().identity_key())
+        .expect("signature verify");
 }
 
 #[test]
@@ -71,11 +84,27 @@ fn parse_rejects_oversized_prelude() {
 
 #[test]
 fn parse_rejects_invalid_signature_length() {
-    let ciphertext = b"payload";
-    let envelope = build_stub_envelope("alice@example.org", &[], ciphertext, None)
-        .expect("build envelope");
+    use crate::{SyftRecoveryKey, encrypt_message, encryption::EncryptionRecipient};
+
+    let sender_sk = SyftRecoveryKey::generate().derive_keys().unwrap();
+    let recipient_sk = SyftRecoveryKey::generate().derive_keys().unwrap();
+    let recipient_bundle = recipient_sk.to_public_bundle(&mut rand::rng()).unwrap();
+
+    let envelope = encrypt_message(
+        "alice@example.org",
+        &sender_sk,
+        &[EncryptionRecipient {
+            identity: "bob@example.org",
+            bundle: &recipient_bundle,
+        }],
+        b"payload",
+        None,
+        &mut rand::rng(),
+    ).unwrap();
+
     let mut tampered = envelope.clone();
 
+    // Find and corrupt the signature length field
     let mut cursor = MAGIC.len() + 1;
     let prelude_len =
         u32::from_le_bytes(tampered[cursor..cursor + 4].try_into().expect("len slice")) as usize;
@@ -83,6 +112,7 @@ fn parse_rejects_invalid_signature_length() {
     let padded_len = align_to_block(prelude_len, PRELUDE_PAD).expect("alignment");
     cursor += padded_len;
 
+    // Set invalid signature length
     tampered[cursor..cursor + 2].copy_from_slice(&10u16.to_le_bytes());
 
     let err = parse_envelope(&tampered).expect_err("should reject invalid signature len");
@@ -91,9 +121,25 @@ fn parse_rejects_invalid_signature_length() {
 
 #[test]
 fn parse_rejects_ciphertext_length_mismatch() {
-    let ciphertext = b"ciphertext";
-    let mut envelope = build_stub_envelope("alice@example.org", &[], ciphertext, None)
-        .expect("build envelope");
+    use crate::{SyftRecoveryKey, encrypt_message, encryption::EncryptionRecipient};
+
+    let sender_sk = SyftRecoveryKey::generate().derive_keys().unwrap();
+    let recipient_sk = SyftRecoveryKey::generate().derive_keys().unwrap();
+    let recipient_bundle = recipient_sk.to_public_bundle(&mut rand::rng()).unwrap();
+
+    let mut envelope = encrypt_message(
+        "alice@example.org",
+        &sender_sk,
+        &[EncryptionRecipient {
+            identity: "bob@example.org",
+            bundle: &recipient_bundle,
+        }],
+        b"ciphertext",
+        None,
+        &mut rand::rng(),
+    ).unwrap();
+
+    // Truncate ciphertext
     envelope.pop().expect("non-empty envelope");
 
     let err = parse_envelope(&envelope).expect_err("should reject ciphertext mismatch");
