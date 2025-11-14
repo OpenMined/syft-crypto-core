@@ -2,16 +2,11 @@ use crate::result::Result;
 use rand::rng;
 use serde_json::{Value, json};
 use syft_crypto_protocol::{
-    SyftPublicKeyBundle, SyftRecoveryKey,
+    SyftRecoveryKey,
     did_utils::generate_did_web_id_default,
     envelope::has_syc_magic,
     serialization::{serialize_private_keys, serialize_to_did_document},
 };
-
-// Helper to ensure `syft-crypto-protocol` stays linked even when no symbols are referenced.
-pub(crate) fn ensure_protocol_dependency() {
-    let _ = core::mem::size_of::<SyftPublicKeyBundle>();
-}
 
 /// Output of the identity generation flow.
 pub(crate) struct GeneratedIdentity {

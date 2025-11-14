@@ -206,6 +206,7 @@ fn default_vault_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".syc"))
 }
 
+/// Convert arbitrary identity strings into filesystem-safe slugs for bundle/key paths.
 pub fn sanitize_identity(identity: &str) -> String {
     identity
         .chars()

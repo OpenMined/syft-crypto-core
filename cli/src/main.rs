@@ -6,7 +6,6 @@ mod result;
 use app::{AppContext, resolve_roots, resolve_vault};
 use clap::Parser;
 use commands::{Cli, handle_command};
-use protocol_interface::ensure_protocol_dependency;
 use result::Result;
 
 fn main() {
@@ -17,8 +16,6 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    ensure_protocol_dependency();
-
     let cli = Cli::parse();
     run_with_cli(cli)
 }
@@ -28,8 +25,6 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    ensure_protocol_dependency();
-
     let cli = Cli::parse_from(args);
     run_with_cli(cli)
 }
