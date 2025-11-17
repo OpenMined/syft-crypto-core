@@ -1,15 +1,18 @@
 use crate::app::{
-    AppContext, Result, atomic_write, bundle_path_for_identity, ensure_vault_layout,
-    resolve_data_path, resolve_shadow_path, yes_no,
+    AppContext, atomic_write, ensure_vault_layout, resolve_data_path, resolve_shadow_path, yes_no,
 };
-use crate::commands::{PlanPrinter, parse_optional_envelope, resolve_identity};
-use crate::protocol_interface::{
-    CURRENT_VERSION, MAGIC, ParsedEnvelope, build_stub_envelope, decrypt_allow_plaintext,
-    decrypt_bytes, encrypt_bytes, inspect_ciphertext,
-};
+use crate::commands::{PlanPrinter, resolve_identity};
+use crate::protocol_interface::inspect_ciphertext;
+use crate::result::Result;
 use clap::{Args, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
+use syft_crypto_protocol::datasite::crypto::{
+    decrypt_envelope_for_recipient, encrypt_envelope_for_recipient, load_cached_bundle,
+    load_private_keys_for_identity, parse_optional_envelope, resolve_recipient_bundle,
+    resolve_sender_bundle_for_decrypt,
+};
+use syft_crypto_protocol::envelope::{CURRENT_VERSION, MAGIC, ParsedEnvelope, verify_signature};
 
 /// File and path subcommands.
 #[derive(Subcommand, Debug)]
@@ -79,10 +82,6 @@ pub(crate) struct FileDecryptArgs {
     #[arg(long, value_name = "IDENTITY")]
     pub(crate) identity: Option<String>,
 
-    /// Bypass schema validation before attempting to decrypt
-    #[arg(long)]
-    pub(crate) skip_checks: bool,
-
     /// Simulate the operation without writing output
     #[arg(long)]
     pub(crate) dry_run: bool,
@@ -116,10 +115,35 @@ fn handle_file_encrypt(context: &AppContext, args: FileEncryptArgs) -> Result<()
     let sender_identity = resolve_identity(args.sender.as_deref(), &context.vault_path)?;
     plan.field("using sender identity", &sender_identity);
 
+    let recipient_identity = args.recipient.clone().ok_or_else(|| {
+        "--recipient is required when encrypting files (target identity missing)".to_string()
+    })?;
+    plan.field("recipient", &recipient_identity);
+
+    let sender_keys = load_private_keys_for_identity(context, &sender_identity)?;
+    let recipient_bundle =
+        resolve_recipient_bundle(context, &sender_keys, &sender_identity, &recipient_identity)?;
+
+    let filename_hint = match operation.mode {
+        OperationMode::Relative => args
+            .relative
+            .as_ref()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+        OperationMode::Direct => operation
+            .input_path()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned()),
+    };
+
     let plaintext = fs::read(operation.input_path())?;
-    let ciphertext = encrypt_bytes(&sender_identity, args.recipient.as_deref(), &plaintext)?;
-    let recipients: Vec<String> = args.recipient.iter().cloned().collect();
-    let envelope = build_stub_envelope(&sender_identity, &recipients, &ciphertext, None)?;
+    let envelope = encrypt_envelope_for_recipient(
+        &sender_identity,
+        &sender_keys,
+        &recipient_identity,
+        &recipient_bundle,
+        &plaintext,
+        filename_hint.as_deref(),
+    )?;
 
     atomic_write(operation.output_path(), &envelope)?;
     match operation.mode {
@@ -138,8 +162,7 @@ fn handle_file_encrypt(context: &AppContext, args: FileEncryptArgs) -> Result<()
 
 fn handle_file_decrypt(context: &AppContext, args: FileDecryptArgs) -> Result<()> {
     let plan = PlanPrinter::new("file decrypt");
-    plan.bool("dry-run", args.dry_run)
-        .bool("skip schema checks", args.skip_checks);
+    plan.bool("dry-run", args.dry_run);
 
     let operation = resolve_decrypt_plan(context, &args, &plan)?;
     let Some(operation) = operation else {
@@ -151,35 +174,24 @@ fn handle_file_decrypt(context: &AppContext, args: FileDecryptArgs) -> Result<()
 
     let encrypted_path = operation.input_path();
     let file_bytes = fs::read(encrypted_path)?;
-    let parsed_envelope = parse_optional_envelope(&file_bytes, args.skip_checks)?;
+    let parsed_envelope = parse_optional_envelope(&file_bytes)?;
     let parsed_envelope = match parsed_envelope {
         Some(parsed) => Some(parsed),
         None => {
-            handle_missing_envelope(operation.mode, encrypted_path, args.skip_checks)?;
+            handle_missing_envelope(operation.mode, encrypted_path)?;
             None
         }
     };
 
-    let result = if let Some(parsed) = parsed_envelope.as_ref() {
-        decrypt_bytes(&active_identity, &parsed.ciphertext, args.skip_checks)?
+    let plaintext = if let Some(parsed) = parsed_envelope.as_ref() {
+        let recipient_keys = load_private_keys_for_identity(context, &active_identity)?;
+        let sender_bundle = resolve_sender_bundle_for_decrypt(context, parsed)?;
+        decrypt_envelope_for_recipient(&active_identity, &recipient_keys, &sender_bundle, parsed)?
     } else {
-        decrypt_allow_plaintext(&active_identity, &file_bytes)?
+        file_bytes.clone()
     };
 
-    if let Some(parsed) = parsed_envelope.as_ref() {
-        debug_assert!(
-            result.envelope.is_stubbed(),
-            "expected stubbed envelope for {:?}",
-            parsed.prelude.sender.identity
-        );
-    } else if matches!(operation.mode, OperationMode::Direct) && result.envelope.is_stubbed() {
-        println!(
-            "  warning: ciphertext envelope detected despite plain input ({}); continuing",
-            encrypted_path.display()
-        );
-    }
-
-    atomic_write(operation.output_path(), &result.plaintext)?;
+    atomic_write(operation.output_path(), &plaintext)?;
     match operation.mode {
         OperationMode::Relative => println!(
             "  wrote decrypted output atomically to {}",
@@ -207,7 +219,6 @@ fn resolve_encrypt_plan(
             .field("relative path", relative.display())
             .opt("recipient", args.recipient.as_deref())
             .opt("sender identity", args.sender.as_deref());
-        print_encrypt_todos(plan);
 
         if args.dry_run {
             plan.info("dry-run complete: no ciphertext produced");
@@ -240,7 +251,6 @@ fn resolve_encrypt_plan(
             .field("destination", dest.display())
             .opt("sender identity", args.sender.as_deref())
             .opt("recipient identity", args.recipient.as_deref());
-        print_encrypt_todos(plan);
 
         if args.dry_run {
             plan.info("dry-run complete: no ciphertext produced");
@@ -274,8 +284,6 @@ fn resolve_decrypt_plan(
                 plan.field("preferred identity", "auto-detect");
             }
         }
-        print_decrypt_todos(plan);
-
         if args.dry_run {
             plan.info("dry-run complete: no plaintext extracted");
             return Ok(None);
@@ -327,33 +335,17 @@ fn resolve_decrypt_plan(
     }
 }
 
-fn print_encrypt_todos(plan: &PlanPrinter) -> &PlanPrinter {
-    plan.info("TODO: fetch recipient bundle, establish PQXDH session, and seal file")
-}
-
-fn print_decrypt_todos(plan: &PlanPrinter) -> &PlanPrinter {
-    plan.info("TODO: verify sender authenticity and check key availability prior to decrypt")
-}
-
-fn handle_missing_envelope(mode: OperationMode, path: &Path, skip_checks: bool) -> Result<()> {
+fn handle_missing_envelope(mode: OperationMode, path: &Path) -> Result<()> {
     match mode {
         OperationMode::Relative => {
-            if !skip_checks {
-                println!("  SYC envelope missing – treating payload as plaintext (relative mode)");
-            }
+            println!("  SYC envelope missing – treating payload as plaintext (relative mode)");
             Ok(())
         }
-        OperationMode::Direct => {
-            if skip_checks {
-                Ok(())
-            } else {
-                Err(format!(
-                    "input {} is not an SYC envelope (magic missing)",
-                    path.display()
-                )
-                .into())
-            }
-        }
+        OperationMode::Direct => Err(format!(
+            "input {} is not an SYC envelope (magic missing)",
+            path.display()
+        )
+        .into()),
     }
 }
 
@@ -389,7 +381,7 @@ fn handle_file_inspect(context: &AppContext, args: FileInspectArgs) -> Result<()
     }
     println!("  verbose: {}", yes_no(args.verbose));
     let bytes = fs::read(&ciphertext_path)?;
-    if let Some(parsed) = parse_optional_envelope(&bytes, false)? {
+    if let Some(parsed) = parse_optional_envelope(&bytes)? {
         println!(
             "  envelope magic: {} (version {})",
             std::str::from_utf8(MAGIC).unwrap_or("SYC1"),
@@ -401,6 +393,18 @@ fn handle_file_inspect(context: &AppContext, args: FileInspectArgs) -> Result<()
             parsed.prelude.sender.identity, parsed.prelude.sender.ik_fingerprint
         );
         report_sender_consistency(context, &parsed)?;
+        match resolve_sender_bundle_for_decrypt(context, &parsed) {
+            Ok(bundle) => match verify_signature(&parsed, &bundle.signal_identity_public_key) {
+                Ok(()) => println!("  signature: valid (sender bundle cached)"),
+                Err(_) => println!("  signature: INVALID (signature mismatch)"),
+            },
+            Err(err) => {
+                println!(
+                    "  signature: unable to verify ({}); run `syc key import` for sender?",
+                    err
+                );
+            }
+        }
         println!("  recipients ({}):", parsed.prelude.recipients.len());
         for recipient in &parsed.prelude.recipients {
             let identity = recipient
@@ -436,10 +440,10 @@ fn handle_file_inspect(context: &AppContext, args: FileInspectArgs) -> Result<()
         println!("  payload bytes: {}", parsed.ciphertext.len());
     } else {
         let info = inspect_ciphertext(&bytes);
-        println!("  not an SYC envelope – fallback stub header check");
+        println!("  not an SYC envelope – treating input as plaintext");
         println!(
-            "  stub ciphertext marker present: {}",
-            yes_no(info.envelope.is_stubbed())
+            "  ciphertext marker present: {}",
+            yes_no(info.envelope.is_wrapped())
         );
         println!("  file size: {} bytes", info.length);
     }
@@ -473,19 +477,6 @@ fn report_sender_consistency(context: &AppContext, parsed: &ParsedEnvelope) -> R
     }
 
     Ok(())
-}
-
-fn load_cached_bundle(
-    context: &AppContext,
-    identity: &str,
-) -> Result<Option<crate::protocol_interface::PublicBundleInfo>> {
-    let path = bundle_path_for_identity(&context.vault_path, identity);
-    if !path.exists() {
-        return Ok(None);
-    }
-    let body = fs::read_to_string(path)?;
-    let info = crate::protocol_interface::parse_public_bundle(&body)?;
-    Ok(Some(info))
 }
 
 #[cfg(test)]

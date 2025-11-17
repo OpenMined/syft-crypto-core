@@ -1,6 +1,6 @@
 # SYC1 Envelope Format
 
-This document describes the prototype “SYC1” envelope implemented inside the CLI. The structure mirrors the blueprint for a Signal-compatible container but currently uses placeholder fingerprints and signatures. Once libsignal integration lands, only the value providers change—the on-disk layout stays identical.
+This document describes the “SYC1” envelope implemented inside the CLI. The structure mirrors the Signal-compatible container we now produce with real fingerprints, signatures, and payloads. The JSON sample below still shows placeholder values for readability, but production builds populate those fields with the actual libsignal-derived data.
 
 ---
 
@@ -57,31 +57,32 @@ The header is binary. If you dump the file as UTF‑8 you may see odd characters
   "created_at": 1730338793,
   "sender": {
     "identity": "alice@example.org",
-    "ik_fingerprint": "stub-alice_example_org"
+    "ik_fingerprint": "sha256hex..."
   },
   "recipients": [
     {
       "identity": "bob@example.org",
-      "device_label": "stub-device",
-      "spk_fingerprint": "stub-bob_example_org:spk",
-      "pqspk_fingerprint": "stub-bob_example_org:pqspk",
+      "device_label": "default",
+      "spk_fingerprint": "sha256hex...",
+      "pqspk_fingerprint": "sha256hex...",
       "signed_prekey_id": 1
     }
   ],
-  "recipient_set_fpr": "stub-fpr-1",
+  "recipient_set_fpr": "sha256hex...",
   "wrappings": [
     {
       "recipient_identity": "bob@example.org",
-      "device_label": "stub-device",
-      "wrap_ephemeral_public": "stub-epk",
-      "wrap_ciphertext": "stub-kem-ciphertext"
+      "device_label": "default",
+      "wrap_ephemeral_public": "base64url(x25519)",
+      "wrap_ciphertext": "base64url(kyber)"
     }
   ],
   "cipher": {
-    "suite": "libsignal-file-v1",
+    "suite": "xchacha20poly1305-v1",
     "segment_count": 1,
     "last_segment_bytes": 1234,
-    "ciphertext_len": 1234
+    "ciphertext_len": 1234,
+    "nonce": "base64urlnonce"
   },
   "integrity": null,
   "public_meta": {
@@ -105,5 +106,4 @@ The JSON is produced via the RFC 8785 canonicalisation helper (`to_jcs_bytes`)
 
 ## Signing Strategy
 
-- `build_stub_envelope` currently concatenates a deterministic marker (`"syc-stub-signature-v1"`) with the first few prelude bytes. This makes it easy to detect tampering in tests without real key material.
-- `verify_stub_signature` recomputes the placeholder and returns an error if it doesn’t match. Once libsignal signing is introduced, this function will call Ed25519 verification instead.
+- `build_stub_envelope` and `verify_stub_signature` remain in the protocol crate purely as **test helpers** so parsing/unit tests can generate deterministic fixtures without invoking the full crypto stack.

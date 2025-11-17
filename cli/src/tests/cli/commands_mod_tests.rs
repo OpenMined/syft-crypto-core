@@ -1,5 +1,7 @@
 use super::*;
-use crate::commands::file::FileInspectArgs;
+use crate::commands::file::{
+    FileCommand as FileSubcommand, FileEncryptArgs, FileInspectArgs, handle_file_command,
+};
 use crate::commands::key::KeyRecoverArgs;
 use crate::protocol_interface;
 use std::fs;
@@ -24,6 +26,23 @@ fn setup_context() -> (tempfile::TempDir, AppContext) {
     )
 }
 
+fn write_identity(context: &AppContext, identity: &str) {
+    let keys_dir = context.vault_path.join("keys");
+    fs::create_dir_all(&keys_dir).unwrap();
+    let bundles_dir = context.vault_path.join("bundles");
+    fs::create_dir_all(&bundles_dir).unwrap();
+
+    let material = protocol_interface::generate_identity_material(identity).unwrap();
+
+    let key_path = keys_dir.join(format!("{}.key", identity));
+    fs::write(&key_path, &material.key_file).unwrap();
+
+    let bundle_path = bundles_dir.join(format!("{}.json", identity));
+    let mut bundle_body = serde_json::to_vec_pretty(&material.public_bundle).unwrap();
+    bundle_body.push(b'\n');
+    fs::write(&bundle_path, bundle_body).unwrap();
+}
+
 #[test]
 fn handle_command_routes_key_variant() {
     let (_tmp, context) = setup_context();
@@ -39,15 +58,28 @@ fn handle_command_routes_key_variant() {
 #[test]
 fn handle_command_routes_file_variant() {
     let (_tmp, context) = setup_context();
-    let file_path = context.data_root.join("blob.bin");
-    fs::create_dir_all(file_path.parent().unwrap()).unwrap();
-    let payload = protocol_interface::encrypt_bytes("alice", None, b"bytes").unwrap();
-    let envelope =
-        protocol_interface::build_stub_envelope("alice", &[], &payload, None).unwrap();
-    fs::write(&file_path, envelope).unwrap();
+    write_identity(&context, "alice");
+    write_identity(&context, "bob");
+
+    let plaintext = context.shadow_root.join("blob.txt");
+    fs::create_dir_all(plaintext.parent().unwrap()).unwrap();
+    fs::write(&plaintext, b"bytes").unwrap();
+
+    handle_file_command(
+        &context,
+        FileSubcommand::Encrypt(FileEncryptArgs {
+            relative: Some(PathBuf::from("blob.txt")),
+            src: None,
+            dest: None,
+            sender: Some("alice".into()),
+            recipient: Some("bob".into()),
+            dry_run: false,
+        }),
+    )
+    .unwrap();
 
     let args = FileInspectArgs {
-        input: PathBuf::from("blob.bin"),
+        input: PathBuf::from("blob.txt"),
         identity: None,
         verbose: false,
     };

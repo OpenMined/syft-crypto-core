@@ -4,11 +4,6 @@ use std::io::Write;
 use tempfile::tempdir;
 
 #[test]
-fn ensure_protocol_dependency_is_noop() {
-    crate::protocol_interface::ensure_protocol_dependency();
-}
-
-#[test]
 fn resolve_vault_prefers_flag_over_env() {
     let vault_flag = PathBuf::from("~/syc-flag");
     let resolved = resolve_vault(Some(vault_flag.clone()));

@@ -1,5 +1,6 @@
-use crate::app::{AppContext, Result, ensure_vault_layout, expand_home};
+use crate::app::{AppContext, ensure_vault_layout, expand_home};
 use crate::commands::PlanPrinter;
+use crate::result::Result;
 use clap::{Args, Subcommand};
 use flate2::Compression;
 use flate2::read::GzDecoder;

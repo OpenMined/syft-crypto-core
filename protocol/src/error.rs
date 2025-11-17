@@ -67,6 +67,15 @@ impl From<TryFromIntError> for KeyError {
     }
 }
 
+impl From<RecoveryError> for KeyError {
+    fn from(error: RecoveryError) -> Self {
+        match error {
+            RecoveryError::DerivationFailed => KeyError::DerivationFailed,
+            other => KeyError::GenerationError(other.to_string()),
+        }
+    }
+}
+
 /// Error types specific to recovery key operations
 #[derive(Debug, thiserror::Error)]
 pub enum RecoveryError {
@@ -109,6 +118,12 @@ pub enum RecoveryError {
     /// General key error during recovery
     #[error("Key error: {0}")]
     KeyError(#[from] KeyError),
+}
+
+impl From<SerializationError> for KeyError {
+    fn from(error: SerializationError) -> Self {
+        KeyError::SerializationError(error.to_string())
+    }
 }
 
 /// Error types for serialization operations
