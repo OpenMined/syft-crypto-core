@@ -49,6 +49,7 @@ impl From<&BytesWriteArgs> for BytesWriteOpts {
         Self {
             relative: args.relative.clone(),
             recipients: args.recipients.clone(),
+            sender: None, // Auto-detect sender identity
             plaintext: args.plaintext,
             overwrite: args.overwrite,
             hint: args.hint.clone(),

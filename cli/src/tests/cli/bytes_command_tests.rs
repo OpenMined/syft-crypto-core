@@ -205,3 +205,96 @@ fn bytes_read_requires_envelope_when_flag_set() {
         "unexpected error: {err}"
     );
 }
+
+#[test]
+fn bytes_write_multi_recipient_encryption() {
+    let (_tmp, context) = setup_context();
+
+    // Create three identities
+    write_identity(&context, "alice@example.org");
+    write_identity(&context, "bob@example.org");
+    write_identity(&context, "carol@example.org");
+
+    let payload = b"multi-recipient secret data";
+    let input_path = context.shadow_root.join("multi.bin");
+    fs::write(&input_path, payload).unwrap();
+
+    // WORKAROUND: CLI lacks --sender flag, so we temporarily move Bob/Carol's
+    // keys out to force sender auto-detection to Alice
+    let keys_dir = context.vault_path.join("keys");
+    let bob_key = keys_dir.join("bob@example.org.key");
+    let carol_key = keys_dir.join("carol@example.org.key");
+    let tmp_dir = context.vault_path.join("tmp");
+    fs::create_dir_all(&tmp_dir).unwrap();
+    let bob_tmp = tmp_dir.join("bob.key");
+    let carol_tmp = tmp_dir.join("carol.key");
+    fs::rename(&bob_key, &bob_tmp).unwrap();
+    fs::rename(&carol_key, &carol_tmp).unwrap();
+
+    // Encrypt for all three recipients (Alice auto-detected as sender via workaround above)
+    handle_bytes_command(
+        &context,
+        BytesCommand::Write(BytesWriteArgs {
+            relative: PathBuf::from("docs/multi.bin"),
+            recipients: vec![
+                "alice@example.org".into(),
+                "bob@example.org".into(),
+                "carol@example.org".into(),
+            ],
+            input: Some(input_path),
+            plaintext: false,
+            overwrite: false,
+            hint: Some("multi-recipient test".into()),
+        }),
+    )
+    .unwrap();
+
+    // Restore Bob and Carol's private keys for decryption
+    fs::rename(&bob_tmp, &bob_key).unwrap();
+    fs::rename(&carol_tmp, &carol_key).unwrap();
+
+    let envelope = fs::read(context.data_root.join("docs/multi.bin")).unwrap();
+    assert!(has_syc_magic(&envelope), "should produce encrypted envelope");
+
+    // Verify Alice can decrypt
+    let alice_out = context.shadow_root.join("alice_decrypted.bin");
+    handle_bytes_command(
+        &context,
+        BytesCommand::Read(BytesReadArgs {
+            relative: PathBuf::from("docs/multi.bin"),
+            identity: Some("alice@example.org".into()),
+            require_envelope: true,
+            output: Some(alice_out.clone()),
+        }),
+    )
+    .unwrap();
+    assert_eq!(fs::read(&alice_out).unwrap(), payload, "Alice should decrypt correctly");
+
+    // Verify Bob can decrypt
+    let bob_out = context.shadow_root.join("bob_decrypted.bin");
+    handle_bytes_command(
+        &context,
+        BytesCommand::Read(BytesReadArgs {
+            relative: PathBuf::from("docs/multi.bin"),
+            identity: Some("bob@example.org".into()),
+            require_envelope: true,
+            output: Some(bob_out.clone()),
+        }),
+    )
+    .unwrap();
+    assert_eq!(fs::read(&bob_out).unwrap(), payload, "Bob should decrypt correctly");
+
+    // Verify Carol can decrypt
+    let carol_out = context.shadow_root.join("carol_decrypted.bin");
+    handle_bytes_command(
+        &context,
+        BytesCommand::Read(BytesReadArgs {
+            relative: PathBuf::from("docs/multi.bin"),
+            identity: Some("carol@example.org".into()),
+            require_envelope: true,
+            output: Some(carol_out.clone()),
+        }),
+    )
+    .unwrap();
+    assert_eq!(fs::read(&carol_out).unwrap(), payload, "Carol should decrypt correctly");
+}

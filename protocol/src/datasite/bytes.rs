@@ -1,8 +1,9 @@
 use crate::datasite::context::{AppContext, atomic_write, resolve_data_path, resolve_identity};
 use crate::datasite::crypto::{
-    decrypt_envelope_for_recipient, encrypt_envelope_for_recipient, load_private_keys_for_identity,
-    parse_optional_envelope, resolve_recipient_bundle, resolve_sender_bundle_for_decrypt,
+    decrypt_envelope_for_recipient, load_private_keys_for_identity, parse_optional_envelope,
+    resolve_recipient_bundle, resolve_sender_bundle_for_decrypt,
 };
+use crate::{EncryptionRecipient, encrypt_message};
 use anyhow::{Result, bail};
 use std::fs;
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ use std::path::PathBuf;
 pub struct BytesWriteOpts {
     pub relative: PathBuf,
     pub recipients: Vec<String>,
+    pub sender: Option<String>,
     pub plaintext: bool,
     pub overwrite: bool,
     pub hint: Option<String>,
@@ -37,6 +39,24 @@ pub struct BytesReadOutput {
     pub envelope_used: bool,
 }
 
+/// Writes plaintext or encrypted bytes to a datasite path.
+///
+/// When recipients are specified, encrypts data using PQXDH multi-recipient encryption
+/// where the payload is encrypted once and the key is wrapped separately for each recipient.
+/// All recipients can independently decrypt using their private keys.
+///
+/// # Arguments
+/// * `context` - Application context containing vault and data root paths
+/// * `opts` - Write options including sender (auto-detected if None), recipients, plaintext flag, and overwrite behavior
+/// * `data` - Raw bytes to write (plaintext or to be encrypted)
+///
+/// # Returns
+/// `BytesWriteOutcome` containing destination path, bytes written, and encryption status
+///
+/// # Errors
+/// - File already exists and `overwrite` is false
+/// - Sender identity cannot be resolved (multiple identities present) or keys not found
+/// - Recipient bundle not cached in vault
 pub fn write_bytes(
     context: &AppContext,
     opts: &BytesWriteOpts,
@@ -52,26 +72,46 @@ pub fn write_bytes(
     }
 
     let payload = if encrypted {
-        if opts.recipients.len() != 1 {
-            bail!("exactly one recipient is supported for encryption");
-        }
-        let sender_identity = resolve_identity(None, &context.vault_path)?;
-        let recipient_identity = opts.recipients[0].clone();
+        let sender_identity = resolve_identity(opts.sender.as_deref(), &context.vault_path)?;
         let sender_keys = load_private_keys_for_identity(context, &sender_identity)?;
-        let recipient_bundle =
-            resolve_recipient_bundle(context, &sender_keys, &sender_identity, &recipient_identity)?;
+
+        // Resolve bundles for all recipients
+        let mut bundles = Vec::with_capacity(opts.recipients.len());
+        for recipient_identity in &opts.recipients {
+            let bundle = resolve_recipient_bundle(
+                context,
+                &sender_keys,
+                &sender_identity,
+                recipient_identity,
+            )?;
+            bundles.push(bundle);
+        }
+
+        // Build EncryptionRecipient references
+        let recipients: Vec<EncryptionRecipient> = opts
+            .recipients
+            .iter()
+            .zip(bundles.iter())
+            .map(|(identity, bundle)| EncryptionRecipient {
+                identity: identity.as_str(),
+                bundle,
+            })
+            .collect();
+
         let hint = opts.hint.clone().or_else(|| {
             opts.relative
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
         });
-        encrypt_envelope_for_recipient(
+
+        let mut rng = rand::rng();
+        encrypt_message(
             &sender_identity,
             &sender_keys,
-            &recipient_identity,
-            &recipient_bundle,
+            &recipients,
             data,
             hint.as_deref(),
+            &mut rng,
         )?
     } else {
         data.to_vec()
