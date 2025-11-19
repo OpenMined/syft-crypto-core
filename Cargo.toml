@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"                 # so that dev-dependency features don't leak into products
-members = ["protocol", "cli"]
+members = ["protocol", "cli", "bindings/python"]
 default-members = ["protocol"] # Build only protocol by default
 
 [workspace.package]
