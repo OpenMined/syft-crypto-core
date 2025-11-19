@@ -1,0 +1,182 @@
+name: Python Release (PyPI)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - custom
+        default: 'patch'
+      custom_version:
+        description: 'Custom version (only if bump=custom, e.g., 0.2.0)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  version-bump:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.new.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Get current version
+        id: current
+        run: |
+          CURRENT=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+          echo "version=${CURRENT}" >> $GITHUB_OUTPUT
+          echo "Current version: ${CURRENT}"
+
+      - name: Calculate new version
+        id: new
+        run: |
+          CURRENT="${{ steps.current.outputs.version }}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          case "${{ inputs.bump }}" in
+            major)
+              NEW_VERSION="$((MAJOR + 1)).0.0"
+              ;;
+            minor)
+              NEW_VERSION="${MAJOR}.$((MINOR + 1)).0"
+              ;;
+            patch)
+              NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+              ;;
+            custom)
+              NEW_VERSION="${{ inputs.custom_version }}"
+              ;;
+          esac
+
+          echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "New version: ${NEW_VERSION}"
+
+      - name: Bump version files
+        run: |
+          VERSION="${{ steps.new.outputs.version }}"
+
+          sed -i.bak "0,/^version = .*/{s/^version = .*/version = \"${VERSION}\"/;}" Cargo.toml && rm Cargo.toml.bak
+          sed -i.bak "0,/^version = .*/{s/^version = .*/version = \"${VERSION}\"/;}" bindings/python/Cargo.toml && rm bindings/python/Cargo.toml.bak
+          sed -i.bak "s/^version = .*/version = \"${VERSION}\"/" bindings/python/pyproject.toml && rm bindings/python/pyproject.toml.bak
+
+      - name: Refresh Cargo.lock
+        run: cargo check -p syft-crypto-protocol
+
+      - name: Commit version bump and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock bindings/python/Cargo.toml bindings/python/pyproject.toml
+          git commit -m "Bump python package version to ${{ steps.new.outputs.version }}"
+          git tag "v${{ steps.new.outputs.version }}-py"
+          git push origin HEAD:main --tags
+
+  build-wheels:
+    needs: version-bump
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: auto
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            manylinux: auto
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            manylinux: off
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            manylinux: off
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            manylinux: off
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: bindings/python
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          sccache: "true"
+          manylinux: ${{ matrix.manylinux }}
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.target }}
+          path: bindings/python/dist/*.whl
+
+  build-sdist:
+    needs: version-bump
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: bindings/python
+          command: sdist
+          args: --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: bindings/python/dist/*.tar.gz
+
+  publish:
+    needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          name: sdist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
