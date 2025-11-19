@@ -50,6 +50,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Run protocol tests
         run: cargo test -p syft-crypto-protocol --all-features
