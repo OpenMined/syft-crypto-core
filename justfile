@@ -13,6 +13,29 @@ install-dev-tools:
     -cargo install cargo-machete
     -cargo install cargo-tarpaulin
 
+# Install Jupyter kernel for Rust notebooks
+install-jupyter:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo "Creating Python virtual environment with uv..."
+    uv venv
+
+    echo "Installing Jupyter in virtual environment..."
+    source .venv/bin/activate
+    uv pip install jupyter
+
+    echo "Installing EvCxR Jupyter kernel..."
+    cargo install evcxr_jupyter
+    evcxr_jupyter --install
+
+    echo ""
+    echo "✓ Setup complete!"
+    echo "To use Jupyter with Rust:"
+    echo "  1. Activate venv: source .venv/bin/activate"
+    echo "  2. Start Jupyter: jupyter notebook"
+    echo "  3. Create new notebook with Rust kernel"
+
 # Build the project in debug mode
 build:
     cargo build --workspace
@@ -164,3 +187,8 @@ init-sandbox:
     --overwrite \
     --bundle-out "${identity}/public/crypto/did.json"
     done
+
+# Clean up sandbox directory created by init-sandbox
+clean-sandbox:
+    rm -rf sandbox/
+    @echo "✅ Removed sandbox/"

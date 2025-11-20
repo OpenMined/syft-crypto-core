@@ -17,3 +17,6 @@ docs/plans/
 # sandbox runtime artifacts
 sandbox/**
 cli/target/*
+
+# notebooks
+notebooks/syc
