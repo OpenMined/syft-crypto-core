@@ -274,7 +274,7 @@ jobs:
       - name: Package binary
         shell: bash
         run: |
-          cd cli/target/${{ matrix.target }}/release
+          cd target/${{ matrix.target }}/release
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             7z a ../../../../syc-${{ matrix.target }}.zip ${{ matrix.binary }}
           else
