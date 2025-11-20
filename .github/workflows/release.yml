@@ -255,6 +255,7 @@ jobs:
 
       - name: Configure cargo target linker
         if: matrix.os == 'ubuntu-latest'
+        shell: bash
         run: |
           mkdir -p ~/.cargo
           if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
