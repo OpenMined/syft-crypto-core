@@ -146,6 +146,15 @@ jobs:
           args: --release --out dist
           sccache: "true"
           manylinux: ${{ matrix.manylinux }}
+          before-script-linux: |
+            if command -v yum >/dev/null 2>&1; then
+              yum -y install protobuf-compiler
+            else
+              apt-get update
+              apt-get install -y protobuf-compiler
+            fi
+        env:
+          PROTOC: /usr/bin/protoc
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
