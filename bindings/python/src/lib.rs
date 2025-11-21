@@ -1,9 +1,9 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use pyo3::Bound;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyModule};
-use pyo3::Bound;
 use rand::rng;
 use serde_json::{self, Value};
 use syft_crypto_protocol as protocol;
