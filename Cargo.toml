@@ -4,7 +4,7 @@ members = ["protocol", "cli", "bindings/python"]
 default-members = ["protocol"] # Build only protocol by default
 
 [workspace.package]
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 edition = "2024"
 authors = [
     "Khoa Nguyen <khoa@openmined.org>",
