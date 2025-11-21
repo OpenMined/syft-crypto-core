@@ -147,14 +147,13 @@ jobs:
           sccache: "true"
           manylinux: ${{ matrix.manylinux }}
           before-script-linux: |
-            if command -v yum >/dev/null 2>&1; then
-              yum -y install protobuf-compiler
-            else
-              apt-get update
-              apt-get install -y protobuf-compiler
-            fi
-        env:
-          PROTOC: /usr/bin/protoc
+            # Install newer protoc in manylinux container
+            PROTOC_VERSION="28.3"
+            PROTOC_ARCH="$(uname -m)"
+            curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip"
+            unzip -q protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip -d /usr/local
+            rm protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip
+            protoc --version
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
