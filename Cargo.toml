@@ -29,7 +29,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [workspace.dependencies]
 syft-crypto-protocol = { path = "protocol" }
 # Core cryptographic dependencies
-libsignal-protocol = { git = "https://github.com/signalapp/libsignal.git", tag = "v0.85.3" }
+libsignal-protocol = { package = "libsignal-protocol-syft", version = "0.85.3-beta.4" }
 rand = "0.9"
 rand_chacha = "0.9"
 hex = "0.4"
