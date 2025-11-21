@@ -286,9 +286,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: syc-${{ matrix.target }}
-          path: |
-            syc-${{ matrix.target }}.tar.gz
-            syc-${{ matrix.target }}.zip
+          path: syc-${{ matrix.target }}.*
 
   publish-protocol:
     name: Publish protocol to crates.io
