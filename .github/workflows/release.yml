@@ -342,29 +342,29 @@ jobs:
         run: |
           NOTES_FILE=$(mktemp)
           cat > "$NOTES_FILE" <<EOF
-# SyftBox Crypto Core v${{ steps.version.outputs.version }}
+          # SyftBox Crypto Core v${{ steps.version.outputs.version }}
 
-Post-quantum cryptographic protocol implementation using Signal's PQXDH.
+          Post-quantum cryptographic protocol implementation using Signal's PQXDH.
 
-## Crates Published
+          ## Crates Published
 
-- \`syft-crypto-protocol\` - Protocol library
-- \`syft-crypto-cli\` - Command-line interface
+          - \`syft-crypto-protocol\` - Protocol library
+          - \`syft-crypto-cli\` - Command-line interface
 
-## Installation
+          ## Installation
 
-### Using Cargo
-```bash
-# Install the CLI tool
-cargo install syft-crypto-cli
+          ### Using Cargo
+          \`\`\`bash
+          # Install the CLI tool
+          cargo install syft-crypto-cli
 
-# Or add the protocol library to your project
-cargo add syft-crypto-protocol
-```
+          # Or add the protocol library to your project
+          cargo add syft-crypto-protocol
+          \`\`\`
 
-### From Binary
-Download the appropriate binary for your platform from the assets below.
-EOF
+          ### From Binary
+          Download the appropriate binary for your platform from the assets below.
+          EOF
 
           gh release create "v${{ steps.version.outputs.version }}" \
             --title "Release v${{ steps.version.outputs.version }}" \
