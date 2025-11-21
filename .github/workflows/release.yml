@@ -53,11 +53,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run protocol tests
-        run: cargo test -p syft-crypto-protocol --all-features
-
-      - name: Run CLI tests
-        run: cargo test -p syft-crypto-cli --all-features
+      - name: Run workspace tests (protocol + CLI)
+        run: cargo test --workspace --all-features
 
   check-version:
     name: Check if version needs bump
@@ -77,67 +74,79 @@ jobs:
         id: check
         shell: bash
         run: |
-          # Check if force_version is provided
-          if [[ -n "${{ github.event.inputs.force_version }}" ]]; then
-            CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-            NEW_VERSION="${{ github.event.inputs.force_version }}"
-            echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-            if [[ "$CURRENT_VERSION" != "$NEW_VERSION" ]]; then
-              echo "needs_bump=true" >> $GITHUB_OUTPUT
-              echo "Forcing version from $CURRENT_VERSION to $NEW_VERSION"
-            else
-              echo "needs_bump=false" >> $GITHUB_OUTPUT
-              echo "Version is already $NEW_VERSION"
+          CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          FORCE_VERSION="${{ github.event.inputs.force_version }}"
+          BUMP_TYPE_INPUT="${{ github.event.inputs.bump_type }}"
+
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+
+          NEEDS_BUMP=false
+          NEW_VERSION=""
+          BUMP_KIND=""
+
+          if [[ -n "$FORCE_VERSION" ]]; then
+            NEW_VERSION="$FORCE_VERSION"
+            if [[ "$CURRENT_VERSION" != "$FORCE_VERSION" ]]; then
+              NEEDS_BUMP=true
             fi
-          # Check if manual bump_type is provided
-          elif [[ "${{ github.event.inputs.bump_type }}" != "" && "${{ github.event.inputs.bump_type }}" != "none" ]]; then
-            CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-            echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-
-            # Calculate new version based on bump type
-            IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
-            MAJOR="${VERSION_PARTS[0]}"
-            MINOR="${VERSION_PARTS[1]}"
-            PATCH="${VERSION_PARTS[2]}"
-
-            case "${{ github.event.inputs.bump_type }}" in
-              major)
-                NEW_VERSION="$((MAJOR + 1)).0.0"
-                ;;
-              minor)
-                NEW_VERSION="$MAJOR.$((MINOR + 1)).0"
-                ;;
-              patch)
-                NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
-                ;;
-            esac
-
-            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-            echo "needs_bump=true" >> $GITHUB_OUTPUT
-            echo "Manual bump requested: ${{ github.event.inputs.bump_type }} (from $CURRENT_VERSION to $NEW_VERSION)"
+          elif [[ -n "$BUMP_TYPE_INPUT" && "$BUMP_TYPE_INPUT" != "none" ]]; then
+            NEEDS_BUMP=true
+            BUMP_KIND="$BUMP_TYPE_INPUT"
           else
-            # Get current version from workspace Cargo.toml
-            CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-            echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-
-            # Check if this version has been published already
             if git tag | grep -q "v$CURRENT_VERSION"; then
-              echo "Version $CURRENT_VERSION already exists, bumping patch version"
-              IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
-              MAJOR="${VERSION_PARTS[0]}"
-              MINOR="${VERSION_PARTS[1]}"
-              PATCH="${VERSION_PARTS[2]}"
-              NEW_PATCH=$((PATCH + 1))
-              NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
-              echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-              echo "needs_bump=true" >> $GITHUB_OUTPUT
-            else
-              echo "Version $CURRENT_VERSION is new"
-              echo "new_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-              echo "needs_bump=false" >> $GITHUB_OUTPUT
+              NEEDS_BUMP=true
+              BUMP_KIND="patch"
+              echo "Detected existing tag v$CURRENT_VERSION, bumping patch/pre-release component" >&2
             fi
           fi
+
+          if [[ "$NEEDS_BUMP" == true && -z "$NEW_VERSION" ]]; then
+            NEW_VERSION=$(CURRENT_VERSION="$CURRENT_VERSION" BUMP_KIND="${BUMP_KIND:-patch}" python - <<'PY'
+import argparse, re, sys, os
+current=os.environ["CURRENT_VERSION"]
+kind=os.environ.get("BUMP_KIND","patch")
+m=re.match(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$", current)
+if not m:
+    sys.exit("Unable to parse version: %s" % current)
+major, minor, patch = map(int, m.groups()[:3])
+pre = m.group(4)
+def bump_pre(pre):
+    if pre is None:
+        return None
+    parts = pre.split(".")
+    if parts and parts[-1].isdigit():
+        parts[-1] = str(int(parts[-1]) + 1)
+    else:
+        parts.append("1")
+    return ".".join(parts)
+if kind == "major":
+    major, minor, patch, pre = major + 1, 0, 0, None
+elif kind == "minor":
+    minor, patch, pre = minor + 1, 0, None
+else:
+    if pre:
+        pre = bump_pre(pre)
+    else:
+        patch += 1
+if pre:
+    print(f"{major}.{minor}.{patch}-{pre}")
+else:
+    print(f"{major}.{minor}.{patch}")
+PY
+)
+          fi
+
+          if [[ -z "$NEW_VERSION" ]]; then
+            NEW_VERSION="$CURRENT_VERSION"
+          fi
+
+          if [[ "$NEEDS_BUMP" == true ]]; then
+            echo "needs_bump=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_bump=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
   bump-version:
     name: Bump version if needed
@@ -276,9 +285,9 @@ jobs:
         run: |
           cd target/${{ matrix.target }}/release
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a ../../../../syc-${{ matrix.target }}.zip ${{ matrix.binary }}
+            7z a ../../../syc-${{ matrix.target }}.zip ${{ matrix.binary }}
           else
-            tar czf ../../../../syc-${{ matrix.target }}.tar.gz ${{ matrix.binary }}
+            tar czf ../../../syc-${{ matrix.target }}.tar.gz ${{ matrix.binary }}
           fi
           cd -
 
@@ -371,38 +380,40 @@ jobs:
           path: artifacts
 
       - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          release_name: Release v${{ steps.version.outputs.version }}
-          draft: false
-          prerelease: false
-          body: |
-            # SyftBox Crypto Core v${{ steps.version.outputs.version }}
+        run: |
+          NOTES_FILE=$(mktemp)
+          cat > "$NOTES_FILE" <<EOF
+# SyftBox Crypto Core v${{ steps.version.outputs.version }}
 
-            Post-quantum cryptographic protocol implementation using Signal's PQXDH.
+Post-quantum cryptographic protocol implementation using Signal's PQXDH.
 
-            ## Crates Published
+## Crates Published
 
-            - `syft-crypto-protocol` - Protocol library
-            - `syft-crypto-cli` - Command-line interface
+- \`syft-crypto-protocol\` - Protocol library
+- \`syft-crypto-cli\` - Command-line interface
 
-            ## Installation
+## Installation
 
-            ### Using Cargo
-            ```bash
-            # Install the CLI tool
-            cargo install syft-crypto-cli
+### Using Cargo
+```bash
+# Install the CLI tool
+cargo install syft-crypto-cli
 
-            # Or add the protocol library to your project
-            cargo add syft-crypto-protocol
-            ```
+# Or add the protocol library to your project
+cargo add syft-crypto-protocol
+```
 
-            ### From Binary
-            Download the appropriate binary for your platform from the assets below.
+### From Binary
+Download the appropriate binary for your platform from the assets below.
+EOF
+
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --title "Release v${{ steps.version.outputs.version }}" \
+            --notes-file "$NOTES_FILE" \
+            --repo "${{ github.repository }}" \
+            --latest
 
       - name: Upload Release Assets
         run: |
