@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"                 # so that dev-dependency features don't leak into products
-members = ["protocol", "cli"]
+members = ["protocol", "cli", "bindings/python"]
 default-members = ["protocol"] # Build only protocol by default
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-beta.5"
 edition = "2024"
 authors = [
     "Khoa Nguyen <khoa@openmined.org>",
@@ -27,9 +27,9 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [workspace.dependencies]
-syft-crypto-protocol = { path = "protocol" }
+syft-crypto-protocol = { path = "protocol", version = "0.1.0-beta.1" }
 # Core cryptographic dependencies
-libsignal-protocol = { git = "https://github.com/signalapp/libsignal.git", tag = "v0.85.3" }
+libsignal-protocol = { package = "libsignal-protocol-syft", version = "0.85.3-beta.4" }
 rand = "0.9"
 rand_chacha = "0.9"
 hex = "0.4"

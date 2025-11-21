@@ -25,16 +25,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install protobuf compiler
-        run: |
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          elif [ "$RUNNER_OS" == "macOS" ]; then
-            brew install protobuf
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            choco install protoc
-          fi
-        shell: bash
+      - name: Install protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -93,16 +87,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install protobuf compiler
-        run: |
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          elif [ "$RUNNER_OS" == "macOS" ]; then
-            brew install protobuf
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            choco install protoc
-          fi
-        shell: bash
+      - name: Install protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -146,3 +134,100 @@ jobs:
 
       - name: Build protocol
         run: cargo build -p syft-crypto-protocol --verbose
+
+  python-lint:
+    name: Python Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+
+      - name: Run lint script
+        run: ./lint.sh
+
+  python-build:
+    name: Python Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+
+      - name: Build extension and smoke import
+        run: |
+          uv venv
+          uv pip install maturin
+          uv run -- maturin develop --manifest-path bindings/python/Cargo.toml
+          uv run python -c "import syft_crypto_python as syc; mat = syc.generate_identity_material('ci@example.com'); assert mat.fingerprint"
+
+  python-wheel-aarch64:
+    name: Python Wheel aarch64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+
+      - name: Build aarch64 wheel (smoke)
+        run: |
+          uv venv
+          uv pip install maturin
+          uv run -- maturin build --release --target aarch64-unknown-linux-gnu --manifest-path bindings/python/Cargo.toml --out dist
+          ls -l dist/*.whl

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin>=1.6,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "syft-crypto-python"
+version = "0.1.0b5"
+description = "Python bindings for the Syft crypto protocol"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "OpenMined" },
+]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/OpenMined/syft-crypto-core"
+Repository = "https://github.com/OpenMined/syft-crypto-core"
+
+[tool.maturin]
+module-name = "syft_crypto_python._native"
+features = ["pyo3/extension-module", "pyo3/abi3-py39"]
+python-source = "python"
