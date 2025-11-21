@@ -20,3 +20,6 @@ cli/target/*
 
 # notebooks
 notebooks/syc
+
+# run artifacts
+**.log
