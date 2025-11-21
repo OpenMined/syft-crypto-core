@@ -81,8 +81,8 @@ jobs:
           echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
 
           NEEDS_BUMP=false
-          NEW_VERSION=""
-          BUMP_KIND=""
+          NEW_VERSION="$CURRENT_VERSION"
+          BUMP_KIND="patch"
 
           if [[ -n "$FORCE_VERSION" ]]; then
             NEW_VERSION="$FORCE_VERSION"
@@ -92,60 +92,17 @@ jobs:
           elif [[ -n "$BUMP_TYPE_INPUT" && "$BUMP_TYPE_INPUT" != "none" ]]; then
             NEEDS_BUMP=true
             BUMP_KIND="$BUMP_TYPE_INPUT"
-          else
-            if git tag | grep -q "v$CURRENT_VERSION"; then
-              NEEDS_BUMP=true
-              BUMP_KIND="patch"
-              echo "Detected existing tag v$CURRENT_VERSION, bumping patch/pre-release component" >&2
-            fi
-          fi
-
-          if [[ "$NEEDS_BUMP" == true && -z "$NEW_VERSION" ]]; then
-            NEW_VERSION=$(CURRENT_VERSION="$CURRENT_VERSION" BUMP_KIND="${BUMP_KIND:-patch}" python - <<'PY'
-import argparse, re, sys, os
-current=os.environ["CURRENT_VERSION"]
-kind=os.environ.get("BUMP_KIND","patch")
-m=re.match(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$", current)
-if not m:
-    sys.exit("Unable to parse version: %s" % current)
-major, minor, patch = map(int, m.groups()[:3])
-pre = m.group(4)
-def bump_pre(pre):
-    if pre is None:
-        return None
-    parts = pre.split(".")
-    if parts and parts[-1].isdigit():
-        parts[-1] = str(int(parts[-1]) + 1)
-    else:
-        parts.append("1")
-    return ".".join(parts)
-if kind == "major":
-    major, minor, patch, pre = major + 1, 0, 0, None
-elif kind == "minor":
-    minor, patch, pre = minor + 1, 0, None
-else:
-    if pre:
-        pre = bump_pre(pre)
-    else:
-        patch += 1
-if pre:
-    print(f"{major}.{minor}.{patch}-{pre}")
-else:
-    print(f"{major}.{minor}.{patch}")
-PY
-)
-          fi
-
-          if [[ -z "$NEW_VERSION" ]]; then
-            NEW_VERSION="$CURRENT_VERSION"
+          elif git tag | grep -q "v$CURRENT_VERSION"; then
+            NEEDS_BUMP=true
+            BUMP_KIND="patch"
+            echo "Detected existing tag v$CURRENT_VERSION, bumping patch/pre-release component" >&2
           fi
 
           if [[ "$NEEDS_BUMP" == true ]]; then
-            echo "needs_bump=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "needs_bump=false" >> "$GITHUB_OUTPUT"
+            NEW_VERSION=$(python scripts/version_tools.py bump --current "$CURRENT_VERSION" --kind "$BUMP_KIND")
           fi
 
+          echo "needs_bump=$NEEDS_BUMP" >> "$GITHUB_OUTPUT"
           echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
   bump-version:

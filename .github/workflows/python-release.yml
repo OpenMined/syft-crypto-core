@@ -56,44 +56,7 @@ jobs:
             fi
             NEW_VERSION="$custom"
           else
-            NEW_VERSION=$(CURRENT_VERSION="$CURRENT" BUMP_KIND="$bump" python - <<'PY'
-import os, re, sys
-current = os.environ["CURRENT_VERSION"]
-kind = os.environ.get("BUMP_KIND", "patch")
-
-m = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$", current)
-if not m:
-    sys.exit(f"Unable to parse version: {current}")
-
-major, minor, patch = map(int, m.groups()[:3])
-pre = m.group(4)
-
-def bump_pre(pre):
-    if pre is None:
-        return None
-    parts = pre.split(".")
-    if parts and parts[-1].isdigit():
-        parts[-1] = str(int(parts[-1]) + 1)
-    else:
-        parts.append("1")
-    return ".".join(parts)
-
-if kind == "major":
-    major, minor, patch, pre = major + 1, 0, 0, None
-elif kind == "minor":
-    minor, patch, pre = minor + 1, 0, None
-else:  # patch
-    if pre:
-        pre = bump_pre(pre)
-    else:
-        patch += 1
-
-if pre:
-    print(f"{major}.{minor}.{patch}-{pre}")
-else:
-    print(f"{major}.{minor}.{patch}")
-PY
-)
+            NEW_VERSION=$(python scripts/version_tools.py bump --current "$CURRENT" --kind "$bump")
           fi
 
           if [[ -z "$NEW_VERSION" ]]; then
@@ -108,33 +71,7 @@ PY
         id: pyver
         run: |
           NV="${{ steps.new.outputs.version }}"
-          PY_VERSION=$(NV="$NV" python - <<'PY'
-import os, re, sys
-v = os.environ["NV"]
-m = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$", v)
-if not m:
-    print(v)
-    sys.exit(0)
-pre = m.group(4)
-if not pre:
-    print(v)
-    sys.exit(0)
-parts = pre.split(".")
-tag = parts[0].lower()
-num = parts[1] if len(parts) > 1 and parts[1].isdigit() else "0"
-if tag in ("alpha", "a"):
-    pep = f"a{num}"
-elif tag in ("beta", "b"):
-    pep = f"b{num}"
-elif tag in ("rc",):
-    pep = f"rc{num}"
-elif tag in ("dev",):
-    pep = f".dev{num}"
-else:
-    pep = f".post{pre}"
-print(f"{m.group(1)}.{m.group(2)}.{m.group(3)}{pep}")
-PY
-)
+          PY_VERSION=$(python scripts/version_tools.py pep440 --version "$NV")
           echo "py_version=${PY_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Bump version files
