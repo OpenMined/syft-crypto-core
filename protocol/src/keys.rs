@@ -310,6 +310,31 @@ impl SyftPrivateKeys {
 }
 
 /// Wrapper that zeroizes contained data immediately after it has been dropped.
+///
+/// # Why This Exists
+///
+/// Ideally we would use `zeroize::Zeroizing<T>` which provides safe, guaranteed
+/// zeroization. However, the libsignal-protocol types (`IdentityKeyPair`, `KeyPair`,
+/// `kem::KeyPair`) do not implement the `Zeroize` trait, so we cannot use the safe API.
+///
+/// If libsignal-protocol-syft added `Zeroize` implementations for its key types,
+/// this wrapper could be removed entirely in favor of `Zeroizing<T>`.
+///
+/// # Why Unsafe Is Required
+///
+/// 1. **Volatile writes** (`std::ptr::write_volatile`): Required to prevent the
+///    compiler from optimizing away the zeroization as a "dead store". There is
+///    no safe API for volatile memory writes in Rust.
+///
+/// 2. **ManuallyDrop::drop**: Required to drop the inner value in-place without
+///    creating a copy. This is unsafe because calling it twice would cause UB.
+///
+/// # Implementation
+///
+/// - The inner value is dropped first (in place, no copy created)
+/// - Memory is then zeroed using volatile writes
+/// - A guard struct ensures zeroization runs even if the inner Drop panics
+/// - A compiler fence prevents reordering of the volatile writes
 struct Sensitive<T>(ManuallyDrop<T>);
 
 impl<T> Sensitive<T> {
@@ -334,12 +359,40 @@ impl<T> DerefMut for Sensitive<T> {
 
 impl<T> Drop for Sensitive<T> {
     fn drop(&mut self) {
-        unsafe {
-            let ptr = (&mut self.0 as *mut ManuallyDrop<T>).cast::<T>();
-            let value = ptr.read();
-            std::ptr::write_bytes(ptr.cast::<u8>(), 0, std::mem::size_of::<T>());
-            drop(value);
+        // Guard struct ensures zeroization runs even if dropping `T` panics.
+        // When this guard is dropped (either normally or during unwinding),
+        // it will zero the memory.
+        struct ZeroizeGuard {
+            ptr: *mut u8,
+            size: usize,
         }
+
+        impl Drop for ZeroizeGuard {
+            fn drop(&mut self) {
+                // SAFETY: We have exclusive access to this memory (we're in Drop),
+                // and the pointer was derived from a valid ManuallyDrop<T>.
+                // Volatile writes prevent dead-store elimination.
+                unsafe {
+                    for i in 0..self.size {
+                        std::ptr::write_volatile(self.ptr.add(i), 0);
+                    }
+                    // Ensure writes are not reordered past this point
+                    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        }
+
+        let guard = ZeroizeGuard {
+            ptr: (&mut self.0 as *mut ManuallyDrop<T>).cast::<u8>(),
+            size: std::mem::size_of::<T>(),
+        };
+
+        // SAFETY: We only call this once, and self.0 is valid.
+        // We use ManuallyDrop specifically to control drop timing.
+        unsafe { ManuallyDrop::drop(&mut self.0) };
+
+        // Guard drops here (or on unwind), zeroing the memory
+        drop(guard);
     }
 }
 

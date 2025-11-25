@@ -57,9 +57,8 @@ fn platform_save_private_keys(_: &serde_json::Value, _: &Path) -> Result<(), Key
 
 /// Save private keys to disk with secure permissions where available.
 ///
-/// On Unix the file is created atomically with mode `0o600`. On Windows we
-/// currently rely on the default per-user ACLs and write directly to the
-/// destination file (a follow-up will add explicit ACL hardening).
+/// On Unix the file is created atomically with mode `0o600`. On Windows the
+/// file is created with an ACL restricted to owner-only access.
 ///
 /// The keys are serialized to JWKS format and written to the specified path.
 ///
