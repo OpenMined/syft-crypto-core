@@ -109,7 +109,7 @@ fn test_unix_temp_file_cleanup_on_success() {
 #[cfg(windows)]
 fn test_windows_private_keys_owner_only_acl() {
     use windows_acl::acl::{ACL, AceType};
-    use windows_acl::helper::current_user;
+    use windows_acl::helper::{current_user, name_to_sid};
 
     let temp_dir = TempDir::new().unwrap();
     let key_path = temp_dir.path().join("secure_keys.json");
@@ -120,8 +120,7 @@ fn test_windows_private_keys_owner_only_acl() {
     save_private_keys(&keys, &key_path).expect("Should save keys");
 
     // Get current user SID
-    let current_user_sid = current_user()
-        .expect("Should get current user")
+    let current_user_sid = name_to_sid(&current_user().expect("Should get current user"), None)
         .expect("Current user SID should exist");
 
     // Load ACL
@@ -157,7 +156,7 @@ fn test_windows_private_keys_owner_only_acl() {
 #[cfg(windows)]
 fn test_windows_overwrite_preserves_acl() {
     use windows_acl::acl::{ACL, AceType};
-    use windows_acl::helper::current_user;
+    use windows_acl::helper::{current_user, name_to_sid};
 
     let temp_dir = TempDir::new().unwrap();
     let key_path = temp_dir.path().join("overwrite_test.json");
@@ -170,8 +169,7 @@ fn test_windows_overwrite_preserves_acl() {
     save_private_keys(&keys, &key_path).expect("Overwrite should succeed");
 
     // Get current user SID
-    let current_user_sid = current_user()
-        .expect("Should get current user")
+    let current_user_sid = name_to_sid(&current_user().expect("Should get current user"), None)
         .expect("Current user SID should exist");
 
     // Load ACL
