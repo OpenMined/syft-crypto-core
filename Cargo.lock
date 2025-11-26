@@ -1817,6 +1817,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "urlencoding",
+ "winapi",
  "windows-acl",
  "zeroize",
 ]
