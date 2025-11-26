@@ -1,11 +1,12 @@
 use crate::error::KeyError;
 use serde_json::Value;
+use std::ffi::c_void;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use windows_acl::acl::{ACL, ACLEntry, AceType};
-use windows_acl::helper::current_user;
+use windows_acl::helper::{current_user, name_to_sid, string_to_sid};
 
 /// File access mask for full control (read, write, execute, delete, etc.)
 const FILE_ALL_ACCESS: u32 = 0x1F01FF;
@@ -85,17 +86,20 @@ fn create_temp_file(path: &Path) -> Result<(File, PathBuf, TempFileGuard), KeyEr
 fn restrict_to_owner(path: &Path) -> Result<(), KeyError> {
     let path_str = path.to_string_lossy();
 
-    // Get current user's SID
-    let current_user_sid = current_user()
-        .map_err(|e| KeyError::StorageError(io::Error::new(io::ErrorKind::Other, e.to_string())))?
-        .ok_or_else(|| {
-            KeyError::StorageError(io::Error::new(
-                io::ErrorKind::Other,
-                "Failed to get current user SID",
-            ))
-        })?;
+    let username = current_user().ok_or_else(|| {
+        KeyError::StorageError(io::Error::new(
+            io::ErrorKind::Other,
+            "Failed to get current user name",
+        ))
+    })?;
 
-    // Load the ACL for the file
+    let current_user_sid = name_to_sid(&username).ok_or_else(|| {
+        KeyError::StorageError(io::Error::new(
+            io::ErrorKind::Other,
+            "Failed to convert username to SID",
+        ))
+    })?;
+
     let mut acl = ACL::from_file_path(&path_str, false).map_err(|e| {
         KeyError::StorageError(io::Error::new(
             io::ErrorKind::Other,
@@ -103,7 +107,6 @@ fn restrict_to_owner(path: &Path) -> Result<(), KeyError> {
         ))
     })?;
 
-    // Get all existing entries
     let entries: Vec<ACLEntry> = acl.all().map_err(|e| {
         KeyError::StorageError(io::Error::new(
             io::ErrorKind::Other,
@@ -111,22 +114,29 @@ fn restrict_to_owner(path: &Path) -> Result<(), KeyError> {
         ))
     })?;
 
-    // Remove all existing DACL entries
     for entry in entries {
         if entry.entry_type == AceType::AccessAllow || entry.entry_type == AceType::AccessDeny {
-            // Remove this entry (non-inheritable)
-            let _ = acl.remove(&entry.sid, Some(entry.entry_type), false);
+            if let Some(sid_bytes) = string_to_sid(&entry.string_sid) {
+                let _ = acl.remove(
+                    sid_bytes.as_ptr() as *mut c_void,
+                    Some(entry.entry_type),
+                    Some(false),
+                );
+            }
         }
     }
 
-    // Add owner-only access
-    acl.allow(&current_user_sid, false, FILE_ALL_ACCESS)
-        .map_err(|e| {
-            KeyError::StorageError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to set owner ACL: {}", e),
-            ))
-        })?;
+    acl.allow(
+        current_user_sid.as_ptr() as *mut c_void,
+        false,
+        FILE_ALL_ACCESS,
+    )
+    .map_err(|e| {
+        KeyError::StorageError(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to set owner ACL: {}", e),
+        ))
+    })?;
 
     Ok(())
 }
