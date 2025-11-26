@@ -93,10 +93,10 @@ fn restrict_to_owner(path: &Path) -> Result<(), KeyError> {
         ))
     })?;
 
-    let current_user_sid = name_to_sid(&username).ok_or_else(|| {
+    let current_user_sid = name_to_sid(&username, None).map_err(|e| {
         KeyError::StorageError(io::Error::new(
             io::ErrorKind::Other,
-            "Failed to convert username to SID",
+            format!("Failed to convert username to SID: {e}"),
         ))
     })?;
 
@@ -116,7 +116,7 @@ fn restrict_to_owner(path: &Path) -> Result<(), KeyError> {
 
     for entry in entries {
         if entry.entry_type == AceType::AccessAllow || entry.entry_type == AceType::AccessDeny {
-            if let Some(sid_bytes) = string_to_sid(&entry.string_sid) {
+            if let Ok(sid_bytes) = string_to_sid(&entry.string_sid) {
                 let _ = acl.remove(
                     sid_bytes.as_ptr() as *mut c_void,
                     Some(entry.entry_type),
