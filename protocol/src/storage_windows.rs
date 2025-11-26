@@ -4,9 +4,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use winapi::ctypes::c_void;
 use windows_acl::acl::{ACL, ACLEntry, AceType};
 use windows_acl::helper::{current_user, name_to_sid, string_to_sid};
-use winapi::ctypes::c_void;
 
 /// File access mask for full control (read, write, execute, delete, etc.)
 const FILE_ALL_ACCESS: u32 = 0x1F01FF;
