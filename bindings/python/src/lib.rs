@@ -1,4 +1,9 @@
+// PyO3 macros generate code that triggers warnings in Rust 2024 edition:
+// - `unsafe_op_in_unsafe_fn`: PyO3 macro-generated code uses unsafe operations
+// - `clippy::useless_conversion`: False positives from PyO3's error handling macros
+// See: https://github.com/PyO3/pyo3/issues/3585
 #![allow(unsafe_op_in_unsafe_fn)]
+#![allow(clippy::useless_conversion)]
 
 use pyo3::Bound;
 use pyo3::exceptions::PyValueError;

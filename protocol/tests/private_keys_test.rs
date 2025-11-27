@@ -76,6 +76,17 @@ fn test_to_public_bundle_respects_supplied_rng() {
     );
 }
 
+/// Verifies that `SyftPrivateKeys` zeroizes its memory when dropped.
+///
+/// # Why Unsafe Is Required In This Test
+///
+/// There is no safe way to verify zeroization because we need to:
+/// 1. Control where the value lives in memory (MaybeUninit gives stable address)
+/// 2. Drop the value manually (drop_in_place)
+/// 3. Read the memory AFTER the value is dropped (normally prevented by Rust)
+///
+/// This is a security test that verifies implementation details - the unsafe
+/// is confined to the test, not the production code being tested.
 #[test]
 fn test_syft_private_keys_memory_zeroized_on_drop() {
     use std::mem::{MaybeUninit, size_of};
@@ -85,7 +96,14 @@ fn test_syft_private_keys_memory_zeroized_on_drop() {
     let signed_pre_key = KeyPair::generate(&mut rng);
     let pq_signed_pre_key = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rng);
 
+    // Use MaybeUninit to get a stable memory location we can inspect after drop
     let mut slot = MaybeUninit::<SyftPrivateKeys>::uninit();
+
+    // SAFETY: This test intentionally reads memory after drop to verify zeroization.
+    // - We write a valid value to the slot
+    // - We drop it in place (triggering Sensitive<T>'s zeroization)
+    // - We read the raw bytes to verify they are all zero
+    // This would be UB in normal code, but is acceptable for security testing.
     unsafe {
         let ptr = slot.as_mut_ptr();
         ptr.write(SyftPrivateKeys::new(
