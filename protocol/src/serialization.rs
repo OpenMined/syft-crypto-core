@@ -340,11 +340,10 @@ pub fn deserialize_private_keys(json: &Value) -> SerializationResult<SyftPrivate
 pub(crate) fn zeroize_json_value(value: &mut Value) {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
-        Value::String(s) => unsafe {
-            // SAFETY: `String::as_mut_vec` exposes the underlying buffer for in-place zeroing.
-            s.as_mut_vec().zeroize();
-            s.clear();
-        },
+        Value::String(s) => {
+            // String implements Zeroize, which uses volatile writes internally
+            s.zeroize();
+        }
         Value::Array(items) => {
             for item in items {
                 zeroize_json_value(item);
