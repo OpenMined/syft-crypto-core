@@ -108,6 +108,7 @@ fn test_unix_temp_file_cleanup_on_success() {
 #[test]
 #[cfg(windows)]
 fn test_windows_private_keys_owner_only_acl() {
+    use winapi::ctypes::c_void;
     use windows_acl::acl::{ACL, AceType};
     use windows_acl::helper::{current_user, name_to_sid, sid_to_string};
 
@@ -157,6 +158,7 @@ fn test_windows_private_keys_owner_only_acl() {
 #[test]
 #[cfg(windows)]
 fn test_windows_overwrite_preserves_acl() {
+    use winapi::ctypes::c_void;
     use windows_acl::acl::{ACL, AceType};
     use windows_acl::helper::{current_user, name_to_sid, sid_to_string};
 
