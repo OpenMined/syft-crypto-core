@@ -109,7 +109,7 @@ fn test_unix_temp_file_cleanup_on_success() {
 #[cfg(windows)]
 fn test_windows_private_keys_owner_only_acl() {
     use windows_acl::acl::{ACL, AceType};
-    use windows_acl::helper::{current_user, name_to_sid};
+    use windows_acl::helper::{current_user, name_to_sid, sid_to_string};
 
     let temp_dir = TempDir::new().unwrap();
     let key_path = temp_dir.path().join("secure_keys.json");
@@ -122,6 +122,8 @@ fn test_windows_private_keys_owner_only_acl() {
     // Get current user SID
     let current_user_sid = name_to_sid(&current_user().expect("Should get current user"), None)
         .expect("Current user SID should exist");
+    let current_user_sid_string = sid_to_string(current_user_sid.as_ptr() as *mut c_void)
+        .expect("Should convert SID to string");
 
     // Load ACL
     let path_str = key_path.to_string_lossy();
@@ -133,17 +135,17 @@ fn test_windows_private_keys_owner_only_acl() {
     // Check that all AccessAllow entries are for the current user only
     for entry in &entries {
         if entry.entry_type == AceType::AccessAllow {
-            assert_eq!(
-                entry.sid, current_user_sid,
-                "Only current user should have access permissions"
-            );
+            assert_eq!(entry.string_sid, current_user_sid_string);
         }
     }
 
     // Verify owner has at least one access entry
-    let owner_entries: Vec<_> = acl
-        .get(&current_user_sid, Some(AceType::AccessAllow))
-        .expect("Should get owner entries");
+    let owner_entries: Vec<_> = entries
+        .iter()
+        .filter(|entry| {
+            entry.entry_type == AceType::AccessAllow && entry.string_sid == current_user_sid_string
+        })
+        .collect();
 
     assert!(
         !owner_entries.is_empty(),
@@ -156,7 +158,7 @@ fn test_windows_private_keys_owner_only_acl() {
 #[cfg(windows)]
 fn test_windows_overwrite_preserves_acl() {
     use windows_acl::acl::{ACL, AceType};
-    use windows_acl::helper::{current_user, name_to_sid};
+    use windows_acl::helper::{current_user, name_to_sid, sid_to_string};
 
     let temp_dir = TempDir::new().unwrap();
     let key_path = temp_dir.path().join("overwrite_test.json");
@@ -171,6 +173,8 @@ fn test_windows_overwrite_preserves_acl() {
     // Get current user SID
     let current_user_sid = name_to_sid(&current_user().expect("Should get current user"), None)
         .expect("Current user SID should exist");
+    let current_user_sid_string = sid_to_string(current_user_sid.as_ptr() as *mut c_void)
+        .expect("Should convert SID to string");
 
     // Load ACL
     let path_str = key_path.to_string_lossy();
@@ -180,10 +184,7 @@ fn test_windows_overwrite_preserves_acl() {
     // Check that only owner has access
     for entry in &entries {
         if entry.entry_type == AceType::AccessAllow {
-            assert_eq!(
-                entry.sid, current_user_sid,
-                "Overwritten file must retain owner-only ACL"
-            );
+            assert_eq!(entry.string_sid, current_user_sid_string);
         }
     }
 }
