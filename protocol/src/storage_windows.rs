@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use winapi::ctypes::c_void;
 use windows_acl::acl::{ACL, ACLEntry, AceType};
-use windows_acl::helper::{current_user, name_to_sid, string_to_sid};
+use windows_acl::helper::{current_user, name_to_sid, sid_to_string, string_to_sid};
 
 /// File access mask for full control (read, write, execute, delete, etc.)
 const FILE_ALL_ACCESS: u32 = 0x1F01FF;
@@ -22,6 +22,9 @@ const FILE_ALL_ACCESS: u32 = 0x1F01FF;
 pub(crate) fn save_private_keys_platform(jwks: &Value, path: &Path) -> Result<(), KeyError> {
     let (mut file, temp_path, mut guard) = create_temp_file(path)?;
 
+    // Restrict ACL immediately after creation to minimize exposure window
+    restrict_to_owner(&temp_path)?;
+
     // Write content
     {
         let mut writer = BufWriter::new(&mut file);
@@ -30,9 +33,6 @@ pub(crate) fn save_private_keys_platform(jwks: &Value, path: &Path) -> Result<()
     }
     file.sync_all()?;
     drop(file);
-
-    // Restrict ACL to owner-only before renaming
-    restrict_to_owner(&temp_path)?;
 
     // Atomic rename
     fs::rename(&temp_path, path)?;
@@ -116,13 +116,24 @@ fn restrict_to_owner(path: &Path) -> Result<(), KeyError> {
 
     for entry in entries {
         if entry.entry_type == AceType::AccessAllow || entry.entry_type == AceType::AccessDeny {
-            if let Ok(sid_bytes) = string_to_sid(&entry.string_sid) {
-                let _ = acl.remove(
-                    sid_bytes.as_ptr() as *mut c_void,
-                    Some(entry.entry_type),
-                    Some(false),
-                );
-            }
+            let sid_bytes = string_to_sid(&entry.string_sid).map_err(|e| {
+                KeyError::StorageError(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to parse entry SID: {e}"),
+                ))
+            })?;
+
+            acl.remove(
+                sid_bytes.as_ptr() as *mut c_void,
+                Some(entry.entry_type),
+                Some(false),
+            )
+            .map_err(|e| {
+                KeyError::StorageError(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to remove existing ACL entry: {e}"),
+                ))
+            })?;
         }
     }
 
@@ -137,6 +148,51 @@ fn restrict_to_owner(path: &Path) -> Result<(), KeyError> {
             format!("Failed to set owner ACL: {}", e),
         ))
     })?;
+
+    // Ensure the owner entry actually exists after modifications
+    let owner_entries = acl
+        .get(
+            current_user_sid.as_ptr() as *mut c_void,
+            Some(AceType::AccessAllow),
+        )
+        .map_err(|e| {
+            KeyError::StorageError(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to verify owner ACL: {e}"),
+            ))
+        })?;
+
+    if owner_entries.is_empty() {
+        return Err(KeyError::StorageError(io::Error::new(
+            io::ErrorKind::Other,
+            "Owner ACL entry missing after update",
+        )));
+    }
+
+    // Final verification: confirm only the owner has AccessAllow entries
+    let owner_sid_string =
+        sid_to_string(current_user_sid.as_ptr() as *mut c_void).map_err(|e| {
+            KeyError::StorageError(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to stringify owner SID: {e}"),
+            ))
+        })?;
+
+    let final_entries: Vec<ACLEntry> = acl.all().map_err(|e| {
+        KeyError::StorageError(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to enumerate ACL after update: {}", e),
+        ))
+    })?;
+
+    for entry in final_entries {
+        if entry.entry_type == AceType::AccessAllow && entry.string_sid != owner_sid_string {
+            return Err(KeyError::StorageError(io::Error::new(
+                io::ErrorKind::Other,
+                "Non-owner AccessAllow entry detected after ACL update",
+            )));
+        }
+    }
 
     Ok(())
 }
