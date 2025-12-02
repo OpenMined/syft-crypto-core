@@ -23,15 +23,15 @@ fn any_to_json(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     }
 
     let py = value.py();
-    let json = PyModule::import_bound(py, "json")?;
+    let json = PyModule::import(py, "json")?;
     let dumped: String = json.call_method1("dumps", (value,))?.extract()?;
     serde_json::from_str(&dumped).map_err(to_py_err)
 }
 
 fn json_to_py(py: Python<'_>, value: &Value) -> PyResult<PyObject> {
-    let json = PyModule::import_bound(py, "json")?;
+    let json = PyModule::import(py, "json")?;
     let dumped = serde_json::to_string(value).map_err(to_py_err)?;
-    Ok(json.call_method1("loads", (dumped,))?.into_py(py))
+    Ok(json.call_method1("loads", (dumped,))?.into())
 }
 
 #[pyclass(name = "SyftRecoveryKey")]
@@ -142,7 +142,7 @@ impl PySyftPublicKeyBundle {
     /// Serialized identity public key bytes (for signature verification).
     #[getter]
     pub fn identity_key_bytes<'py>(&self, py: Python<'py>) -> Py<PyBytes> {
-        PyBytes::new_bound(py, &self.inner.signal_identity_public_key.serialize()).into()
+        PyBytes::new(py, &self.inner.signal_identity_public_key.serialize()).into()
     }
 
     /// Verify bundle signatures.
@@ -215,7 +215,7 @@ impl PyIdentityMaterial {
 
     #[getter]
     pub fn key_file<'py>(&self, py: Python<'py>) -> Py<PyBytes> {
-        PyBytes::new_bound(py, &self.inner.key_file).into()
+        PyBytes::new(py, &self.inner.key_file).into()
     }
 
     #[getter]
@@ -240,17 +240,17 @@ impl PyParsedEnvelope {
 
     #[getter]
     pub fn prelude_bytes<'py>(&self, py: Python<'py>) -> Py<PyBytes> {
-        PyBytes::new_bound(py, &self.inner.prelude_bytes).into()
+        PyBytes::new(py, &self.inner.prelude_bytes).into()
     }
 
     #[getter]
     pub fn signature<'py>(&self, py: Python<'py>) -> Py<PyBytes> {
-        PyBytes::new_bound(py, &self.inner.signature).into()
+        PyBytes::new(py, &self.inner.signature).into()
     }
 
     #[getter]
     pub fn ciphertext<'py>(&self, py: Python<'py>) -> Py<PyBytes> {
-        PyBytes::new_bound(py, &self.inner.ciphertext).into()
+        PyBytes::new(py, &self.inner.ciphertext).into()
     }
 }
 
@@ -322,7 +322,7 @@ pub fn encrypt_message(
     )
     .map_err(to_py_err)?;
 
-    Ok(PyBytes::new_bound(py, &envelope).into())
+    Ok(PyBytes::new(py, &envelope).into())
 }
 
 #[pyfunction]
@@ -341,7 +341,7 @@ pub fn decrypt_message(
     )
     .map_err(to_py_err)?;
 
-    Ok(PyBytes::new_bound(py, &plaintext).into())
+    Ok(PyBytes::new(py, &plaintext).into())
 }
 
 /// Python module definition.

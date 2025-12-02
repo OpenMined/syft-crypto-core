@@ -29,7 +29,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [workspace.dependencies]
 syft-crypto-protocol = { path = "protocol", version = "0.1.0-beta.1" }
 # Core cryptographic dependencies
-libsignal-protocol = { package = "libsignal-protocol-syft", version = "0.85.3-beta.4" }
+libsignal-protocol = { package = "libsignal-protocol-syft", version = "0.85.3-beta.5" }
 rand = "0.9"
 rand_chacha = "0.9"
 hex = "0.4"
@@ -55,3 +55,11 @@ clap = { version = "4", features = ["derive"] }
 
 # Testing dependencies
 tempfile = "3"
+
+[patch.crates-io]
+# Use vendored libsignal with updated hpke-rs to fix yanked libcrux-sha3
+libsignal-protocol-syft = { path = "vendor/libsignal-protocol-syft/crates/libsignal-protocol-syft", version = "0.85.3-beta.5" }
+signal-crypto-syft = { path = "vendor/libsignal-protocol-syft/crates/signal-crypto-syft", version = "0.85.3-beta.5" }
+libsignal-core-syft = { path = "vendor/libsignal-protocol-syft/crates/libsignal-core-syft", version = "0.85.3-beta.5" }
+spqr-syft = { path = "vendor/libsignal-protocol-syft/crates/spqr-syft", version = "0.85.3-beta.5" }
+
