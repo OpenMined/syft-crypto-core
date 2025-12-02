@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -86,6 +88,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -140,6 +144,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -173,6 +179,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -204,6 +212,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
