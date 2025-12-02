@@ -55,3 +55,11 @@ clap = { version = "4", features = ["derive"] }
 
 # Testing dependencies
 tempfile = "3"
+
+[patch.crates-io]
+# Use vendored libsignal with updated hpke-rs to fix yanked libcrux-sha3
+libsignal-protocol-syft = { path = "vendor/libsignal-protocol-syft/crates/libsignal-protocol-syft", version = "0.85.3-beta.4" }
+signal-crypto-syft = { path = "vendor/libsignal-protocol-syft/crates/signal-crypto-syft", version = "0.85.3-beta.4" }
+libsignal-core-syft = { path = "vendor/libsignal-protocol-syft/crates/libsignal-core-syft", version = "0.85.3-beta.4" }
+spqr-syft = { path = "vendor/libsignal-protocol-syft/crates/spqr-syft", version = "0.85.3-beta.4" }
+
