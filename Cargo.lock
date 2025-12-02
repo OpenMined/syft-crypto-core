@@ -977,7 +977,7 @@ dependencies = [
 
 [[package]]
 name = "libsignal-core-syft"
-version = "0.85.3-beta.4"
+version = "0.85.3-beta.5"
 dependencies = [
  "curve25519-dalek",
  "derive_more",
@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "libsignal-protocol-syft"
-version = "0.85.3-beta.4"
+version = "0.85.3-beta.5"
 dependencies = [
  "aes",
  "aes-gcm-siv",
@@ -1695,7 +1695,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "signal-crypto-syft"
-version = "0.85.3-beta.4"
+version = "0.85.3-beta.5"
 dependencies = [
  "aes",
  "cbc",
@@ -1755,7 +1755,7 @@ checksum = "19f58d7b0190c7f12df7e8be6b79767a0836059159811b869d5ab55721fe14d0"
 
 [[package]]
 name = "spqr-syft"
-version = "0.85.3-beta.4"
+version = "0.85.3-beta.5"
 dependencies = [
  "cpufeatures",
  "curve25519-dalek",
