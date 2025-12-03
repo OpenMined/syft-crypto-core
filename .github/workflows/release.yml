@@ -69,6 +69,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Check version
         id: check
@@ -117,6 +118,7 @@ jobs:
         with:
           token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+          submodules: recursive
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -192,6 +194,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
+          submodules: recursive
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -271,6 +274,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
+          submodules: recursive
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -297,6 +301,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
+          submodules: recursive
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
