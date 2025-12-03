@@ -99,7 +99,7 @@ jobs:
           fi
 
           if [[ "$NEEDS_BUMP" == true ]]; then
-            NEW_VERSION=$(python scripts/version_tools.py bump --current "$CURRENT_VERSION" --kind "$BUMP_KIND")
+            NEW_VERSION=$(python3 scripts/version_tools.py bump --current "$CURRENT_VERSION" --kind "$BUMP_KIND")
           fi
 
           echo "needs_bump=$NEEDS_BUMP" >> "$GITHUB_OUTPUT"
@@ -129,7 +129,11 @@ jobs:
       - name: Update version in workspace Cargo.toml
         shell: bash
         run: |
-          sed -i 's/^version = .*/version = "${{ needs.check-version.outputs.new_version }}"/' Cargo.toml
+          VERSION="${{ needs.check-version.outputs.new_version }}"
+
+          # Update all version files using version_tools.py
+          python3 scripts/version_tools.py update --version "$VERSION"
+
           # Update Cargo.lock
           cargo update --workspace
 

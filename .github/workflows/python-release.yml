@@ -61,7 +61,7 @@ jobs:
             fi
             NEW_VERSION="$custom"
           else
-            NEW_VERSION=$(python scripts/version_tools.py bump --current "$CURRENT" --kind "$bump")
+            NEW_VERSION=$(python3 scripts/version_tools.py bump --current "$CURRENT" --kind "$bump")
           fi
 
           if [[ -z "$NEW_VERSION" ]]; then
@@ -72,24 +72,15 @@ jobs:
           echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
           echo "New version: ${NEW_VERSION}"
 
-      - name: Compute Python-compatible version
-        id: pyver
-        run: |
-          NV="${{ steps.new.outputs.version }}"
-          PY_VERSION=$(python scripts/version_tools.py pep440 --version "$NV")
-          echo "py_version=${PY_VERSION}" >> $GITHUB_OUTPUT
-
       - name: Bump version files
         run: |
           VERSION="${{ steps.new.outputs.version }}"
-          PY_VERSION="${{ steps.pyver.outputs.py_version }}"
 
-          sed -i.bak "0,/^version = .*/{s/^version = .*/version = \"${VERSION}\"/;}" Cargo.toml && rm Cargo.toml.bak
-          sed -i.bak "0,/^version = .*/{s/^version = .*/version = \"${VERSION}\"/;}" bindings/python/Cargo.toml && rm bindings/python/Cargo.toml.bak
-          sed -i.bak "s/^version = .*/version = \"${PY_VERSION}\"/" bindings/python/pyproject.toml && rm bindings/python/pyproject.toml.bak
+          # Update all version files using version_tools.py
+          python3 scripts/version_tools.py update --version "$VERSION"
 
       - name: Refresh Cargo.lock
-        run: cargo check -p syft-crypto-protocol
+        run: cargo update --workspace
 
       - name: Commit version bump and tag
         run: |
