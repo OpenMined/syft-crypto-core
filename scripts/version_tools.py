@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from pathlib import Path
 
 
 SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
@@ -72,6 +73,61 @@ def to_pep440(version: str) -> str:
     return f"{major}.{minor}.{patch}{pep}"
 
 
+def update_cargo_toml(file_path: Path, version: str) -> None:
+    """Update version in Cargo.toml (workspace or package)."""
+    content = file_path.read_text()
+
+    # Update [workspace.package] version or [package] version
+    content = re.sub(
+        r'^version = ".*"',
+        f'version = "{version}"',
+        content,
+        count=1,
+        flags=re.MULTILINE
+    )
+
+    # Update workspace dependency version for syft-crypto-protocol
+    content = re.sub(
+        r'syft-crypto-protocol = \{ path = "protocol", version = ".*" \}',
+        f'syft-crypto-protocol = {{ path = "protocol", version = "{version}" }}',
+        content
+    )
+
+    file_path.write_text(content)
+
+
+def update_pyproject_toml(file_path: Path, version: str) -> None:
+    """Update version in pyproject.toml."""
+    content = file_path.read_text()
+
+    content = re.sub(
+        r'^version = ".*"',
+        f'version = "{version}"',
+        content,
+        count=1,
+        flags=re.MULTILINE
+    )
+
+    file_path.write_text(content)
+
+
+def update_files(version: str, py_version: str | None = None) -> None:
+    """Update all version files in the project."""
+    repo_root = Path(__file__).parent.parent
+
+    # Update root Cargo.toml (workspace)
+    cargo_toml = repo_root / "Cargo.toml"
+    if cargo_toml.exists():
+        print(f"Updating {cargo_toml.relative_to(repo_root)}: {version}")
+        update_cargo_toml(cargo_toml, version)
+
+    # Update Python pyproject.toml
+    pyproject = repo_root / "bindings" / "python" / "pyproject.toml"
+    if pyproject.exists() and py_version:
+        print(f"Updating {pyproject.relative_to(repo_root)}: {py_version}")
+        update_pyproject_toml(pyproject, py_version)
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -88,12 +144,20 @@ def main():
     pep = sub.add_parser("pep440", help="Convert semver to PEP440")
     pep.add_argument("--version", required=True)
 
+    update = sub.add_parser("update", help="Update version files in the project")
+    update.add_argument("--version", required=True, help="Semver version to set")
+
     args = parser.parse_args()
 
     if args.cmd == "bump":
         print(bump_version(args.current, args.kind))
     elif args.cmd == "pep440":
         print(to_pep440(args.version))
+    elif args.cmd == "update":
+        version = args.version
+        py_version = to_pep440(version)
+        update_files(version, py_version)
+        print(f"✓ Updated to {version} (Python: {py_version})")
     else:
         raise SystemExit("Unknown command")
 
