@@ -17,6 +17,21 @@ pub struct IdentityMaterial {
 
 pub fn generate_identity_material(identity: &str) -> Result<IdentityMaterial> {
     let recovery_key = SyftRecoveryKey::generate();
+    build_identity_material(identity, &recovery_key)
+}
+
+/// Build deterministic identity material from an existing recovery key (e.g., restored via mnemonic).
+pub fn identity_material_from_recovery_key(
+    identity: &str,
+    recovery_key: &SyftRecoveryKey,
+) -> Result<IdentityMaterial> {
+    build_identity_material(identity, recovery_key)
+}
+
+fn build_identity_material(
+    identity: &str,
+    recovery_key: &SyftRecoveryKey,
+) -> Result<IdentityMaterial> {
     let recovery_key_hex = recovery_key.to_hex_string();
     let recovery_key_mnemonic = recovery_key.to_mnemonic();
 
