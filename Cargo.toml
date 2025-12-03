@@ -4,7 +4,7 @@ members = ["protocol", "cli", "bindings/python"]
 default-members = ["protocol"] # Build only protocol by default
 
 [workspace.package]
-version = "0.1.2-beta.0"
+version = "0.1.2-beta.1"
 edition = "2024"
 authors = [
     "Khoa Nguyen <khoa@openmined.org>",
@@ -27,7 +27,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [workspace.dependencies]
-syft-crypto-protocol = { path = "protocol", version = "0.1.2-beta.0" }
+syft-crypto-protocol = { path = "protocol", version = "0.1.2-beta.1" }
 # Core cryptographic dependencies
 libsignal-protocol = { package = "libsignal-protocol-syft", version = "0.85.3-beta.5" }
 rand = "0.9"
