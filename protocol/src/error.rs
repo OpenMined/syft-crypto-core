@@ -20,6 +20,16 @@ pub enum KeyError {
     #[error("Invalid signature")]
     InvalidSignature,
 
+    /// Decryption failed - message was encrypted with different key material
+    #[error(
+        "Decryption failed: message was encrypted for a different key (recipient may have regenerated keys)"
+    )]
+    DecryptionFailed,
+
+    /// Recipient identity not found in envelope
+    #[error("Recipient not found: this message was not encrypted for your identity")]
+    RecipientNotFound,
+
     /// Serialization or deserialization error
     #[error("Serialization error: {0}")]
     SerializationError(String),

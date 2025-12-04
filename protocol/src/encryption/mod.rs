@@ -154,7 +154,7 @@ pub fn decrypt_message(
         match_choice |= eq;
     }
     if match_choice.unwrap_u8() == 0 {
-        return Err(KeyError::InvalidSignature);
+        return Err(KeyError::RecipientNotFound);
     }
 
     let wrapping = parsed
@@ -208,7 +208,7 @@ pub fn decrypt_message(
                 aad: FILE_AAD,
             },
         )
-        .map_err(|_| KeyError::InvalidSignature)
+        .map_err(|_| KeyError::DecryptionFailed)
 }
 
 #[cfg(test)]
