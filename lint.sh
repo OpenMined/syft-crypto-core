@@ -33,12 +33,12 @@ if [[ ! -d "$ROOT_DIR/vendor/libsignal-protocol-syft/crates" ]]; then
 fi
 
 # Setup venv (must be sequential)
-export UV_VENV_CLEAR=1
-uv venv > /dev/null 2>&1
-uv pip install maturin ruff mypy vulture pytest > /dev/null 2>&1
+uv venv --quiet 2>/dev/null || true
+source .venv/bin/activate
+uv pip install maturin ruff mypy vulture pytest --quiet 2>/dev/null
 
 echo -e "${CYAN}→ maturin develop${NC}"
-if ! uv run -- maturin develop --manifest-path "$BINDINGS/Cargo.toml" > /dev/null 2>&1; then
+if ! maturin develop --manifest-path "$BINDINGS/Cargo.toml" > /dev/null 2>&1; then
   echo -e "${RED}✗ maturin develop failed${NC}"
   exit 1
 fi
@@ -83,18 +83,18 @@ wait_all() {
 }
 
 if [[ "$CHECK_MODE" -eq 1 ]]; then
-  run_task "ruff-format" uv run ruff format "$PY_SRC" --check
-  run_task "ruff-check" uv run ruff check "$PY_SRC"
+  run_task "ruff-format" ruff format "$PY_SRC" --check
+  run_task "ruff-check" ruff check "$PY_SRC"
 else
-  run_task "ruff-format" uv run ruff format "$PY_SRC"
-  run_task "ruff-check" uv run ruff check "$PY_SRC" --fix
+  run_task "ruff-format" ruff format "$PY_SRC"
+  run_task "ruff-check" ruff check "$PY_SRC" --fix
 fi
 
-run_task "mypy" uv run mypy "$PY_SRC"
-run_task "vulture" uv run vulture "$PY_SRC" --min-confidence 80
+run_task "mypy" mypy "$PY_SRC"
+run_task "vulture" vulture "$PY_SRC" --min-confidence 80
 
 if [[ "$RUN_TESTS" -eq 1 ]]; then
-  run_task "pytest" uv run pytest
+  run_task "pytest" pytest
 fi
 
 wait_all
