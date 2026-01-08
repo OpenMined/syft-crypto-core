@@ -1,27 +1,106 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# lint.sh - Auto-fix Python bindings (parallel, quiet on success)
+# Usage: ./lint.sh [--check] [--test]
+#   --check  Read-only mode for CI (no auto-fix)
+#   --test   Also run tests (slower)
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BINDINGS="$ROOT/bindings/python"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+CHECK_MODE=0
+RUN_TESTS=0
+for arg in "$@"; do
+  case "$arg" in
+    --check) CHECK_MODE=1 ;;
+    --test) RUN_TESTS=1 ;;
+  esac
+done
+
+BINDINGS="$ROOT_DIR/bindings/python"
 PY_SRC="$BINDINGS/python"
+YELLOW='\033[0;33m'
 
-export UV_VENV_CLEAR=1
-uv venv
-uv pip install maturin ruff mypy vulture pytest
+# Check if submodules are initialized
+if [[ ! -d "$ROOT_DIR/vendor/libsignal-protocol-syft/crates" ]]; then
+  echo -e "${YELLOW}⊘ skipped (submodules not initialized)${NC}"
+  exit 0
+fi
 
-echo "Building extension in dev mode..."
-uv run -- maturin develop --manifest-path "$BINDINGS/Cargo.toml"
+# Setup venv (must be sequential)
+uv venv --quiet 2>/dev/null || true
+source .venv/bin/activate
+uv pip install maturin ruff mypy vulture pytest --quiet 2>/dev/null
 
-echo "Running ruff format..."
-uv run ruff format "$PY_SRC"
+echo -e "${CYAN}→ maturin develop${NC}"
+if ! maturin develop --manifest-path "$BINDINGS/Cargo.toml" > /dev/null 2>&1; then
+  echo -e "${RED}✗ maturin develop failed${NC}"
+  exit 1
+fi
 
-echo "Running ruff check with fixes..."
-uv run ruff check "$PY_SRC" --fix
+TMPDIR_LINT=$(mktemp -d)
+trap "rm -rf $TMPDIR_LINT" EXIT
 
-echo "Running mypy..."
-uv run mypy "$PY_SRC"
+FAILED=0
+PIDS=()
+TASKS=()
 
-echo "Running vulture to detect dead code..."
-uv run vulture "$PY_SRC" --min-confidence 80
+run_task() {
+  local name="$1"
+  local outfile="$TMPDIR_LINT/$name.out"
+  shift
+  TASKS+=("$name")
+  echo -e "${CYAN}→ $name${NC}"
+  (
+    if "$@" > "$outfile" 2>&1; then
+      echo "0" > "$outfile.status"
+    else
+      echo "1" > "$outfile.status"
+    fi
+  ) &
+  PIDS+=($!)
+}
 
-echo "✓ All linting checks passed!"
+wait_all() {
+  local i=0
+  for pid in "${PIDS[@]}"; do
+    wait "$pid" || true
+    local name="${TASKS[$i]}"
+    local outfile="$TMPDIR_LINT/$name.out"
+    if [[ -f "$outfile.status" && "$(cat "$outfile.status")" != "0" ]]; then
+      echo -e "${RED}✗ $name${NC}"
+      cat "$outfile"
+      echo ""
+      FAILED=1
+    fi
+    i=$((i + 1))
+  done
+}
+
+if [[ "$CHECK_MODE" -eq 1 ]]; then
+  run_task "ruff-format" ruff format "$PY_SRC" --check
+  run_task "ruff-check" ruff check "$PY_SRC"
+else
+  run_task "ruff-format" ruff format "$PY_SRC"
+  run_task "ruff-check" ruff check "$PY_SRC" --fix
+fi
+
+run_task "mypy" mypy "$PY_SRC"
+run_task "vulture" vulture "$PY_SRC" --min-confidence 80
+
+if [[ "$RUN_TESTS" -eq 1 ]]; then
+  run_task "pytest" pytest
+fi
+
+wait_all
+
+if [[ "$FAILED" -eq 0 ]]; then
+  echo -e "${GREEN}✓ All checks passed${NC}"
+else
+  exit 1
+fi
