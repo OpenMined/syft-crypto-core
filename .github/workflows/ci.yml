@@ -166,7 +166,7 @@ jobs:
           enable-cache: false
 
       - name: Run lint script
-        run: ./lint.sh
+        run: ./lint.sh --check
 
   python-build:
     name: Python Build
