@@ -11,9 +11,11 @@ All shell commands are relative to the repository root (`syft-crypto-core`). Adj
 > Quick start: `just init-sandbox` will create the directory skeletons, write the datasite configs, and generate the Alice/Bob key material automatically. The steps below show the same process manually in case you need to customise the layout.
 
 ## 0. Compile / Run syc
+
 The `syc` command can be run direcly from the repo root by invoking it as a binary syc (this is a wrapper shell script).
 
 Alternatively you can build and install with:
+
 ```
 cargo install --path cli
 which -a syc
@@ -193,4 +195,4 @@ The decrypted plaintext resides at `sandbox/bob/unencrypted/bob@example.org/shar
 - Decrypted plaintext:
   `sandbox/bob/unencrypted/bob@example.org/shared/alice@example.org/files/message.txt`
 
-Repeat the same steps for other identities or add additional plaintext files under the corresponding `unencrypted/<identity>/shared/...` folders.***
+Repeat the same steps for other identities or add additional plaintext files under the corresponding `unencrypted/<identity>/shared/...` folders.\*\*\*

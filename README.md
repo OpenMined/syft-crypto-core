@@ -7,6 +7,7 @@ End-to-end encrypted communication and file synchronization for SyftBox using th
 This crate provides cryptographic primitives for secure messaging and file synchronization in SyftBox, built on top of [libsignal's implementation](https://github.com/signalapp/libsignal) of the Signal protocol. It includes support for the PQXDH key agreement protocol for post-quantum security via Kyber.
 
 ## Status
+
 This software is considered Beta so use at your own risk.
 
 ## Project Structure

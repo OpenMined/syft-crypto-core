@@ -45,49 +45,48 @@ The header is binary. If you dump the file as UTF‑8 you may see odd characters
 
 ![](./evelope-structure.png)
 
-
 ---
 
 ## Prelude Schema
 
 ```jsonc
 {
-  "version": 1,
-  "canon": "jcs-rfc8785",
-  "created_at": 1730338793,
-  "sender": {
-    "identity": "alice@example.org",
-    "ik_fingerprint": "sha256hex..."
-  },
-  "recipients": [
-    {
-      "identity": "bob@example.org",
-      "device_label": "default",
-      "spk_fingerprint": "sha256hex...",
-      "pqspk_fingerprint": "sha256hex...",
-      "signed_prekey_id": 1
-    }
-  ],
-  "recipient_set_fpr": "sha256hex...",
-  "wrappings": [
-    {
-      "recipient_identity": "bob@example.org",
-      "device_label": "default",
-      "wrap_ephemeral_public": "base64url(x25519)",
-      "wrap_ciphertext": "base64url(kyber)"
-    }
-  ],
-  "cipher": {
-    "suite": "xchacha20poly1305-v1",
-    "segment_count": 1,
-    "last_segment_bytes": 1234,
-    "ciphertext_len": 1234,
-    "nonce": "base64urlnonce"
-  },
-  "integrity": null,
-  "public_meta": {
-    "filename_hint": "optional_hint.txt"
-  }
+	"version": 1,
+	"canon": "jcs-rfc8785",
+	"created_at": 1730338793,
+	"sender": {
+		"identity": "alice@example.org",
+		"ik_fingerprint": "sha256hex...",
+	},
+	"recipients": [
+		{
+			"identity": "bob@example.org",
+			"device_label": "default",
+			"spk_fingerprint": "sha256hex...",
+			"pqspk_fingerprint": "sha256hex...",
+			"signed_prekey_id": 1,
+		},
+	],
+	"recipient_set_fpr": "sha256hex...",
+	"wrappings": [
+		{
+			"recipient_identity": "bob@example.org",
+			"device_label": "default",
+			"wrap_ephemeral_public": "base64url(x25519)",
+			"wrap_ciphertext": "base64url(kyber)",
+		},
+	],
+	"cipher": {
+		"suite": "xchacha20poly1305-v1",
+		"segment_count": 1,
+		"last_segment_bytes": 1234,
+		"ciphertext_len": 1234,
+		"nonce": "base64urlnonce",
+	},
+	"integrity": null,
+	"public_meta": {
+		"filename_hint": "optional_hint.txt",
+	},
 }
 ```
 

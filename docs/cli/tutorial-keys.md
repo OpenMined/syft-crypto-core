@@ -66,6 +66,7 @@ syc \
 A successful import prints the bundle identity and fingerprint, then writes a
 canonical copy to `sandbox/bob/.syc/bundles/alice@example.org.json`. Repeat the
 steps in reverse so Alice caches Bob’s bundle.
+
 ```
 mkdir -p sandbox/alice/datasites/bob@example.org/public/crypto
 cp \
