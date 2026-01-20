@@ -363,7 +363,7 @@ jobs:
           cat > "$NOTES_FILE" <<EOF
           # SyftBox Crypto Core v${VERSION}
 
-          Post-quantum cryptographic protocol implementation using Signal's PQXDH.
+          Classical cryptographic protocol implementation using X3DH-style key agreement.
 
           ## Published Artifacts
 

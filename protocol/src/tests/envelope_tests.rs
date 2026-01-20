@@ -54,7 +54,7 @@ fn envelope_builds_and_parses() {
     assert_eq!(parsed.prelude.sender.identity, "alice@example.org");
 
     // Verify real signature
-    crate::envelope::verify_signature(&parsed, sender_sk.identity().identity_key())
+    crate::envelope::verify_signature(&parsed, &sender_sk.identity().verifying_key())
         .expect("signature verify");
 }
 

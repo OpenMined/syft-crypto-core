@@ -1,4 +1,5 @@
 use syft_crypto_protocol::SyftRecoveryKey;
+use x25519_dalek::PublicKey as X25519PublicKey;
 
 #[test]
 fn test_derive_keys_from_recovery_key() {
@@ -7,174 +8,94 @@ fn test_derive_keys_from_recovery_key() {
         .derive_keys()
         .expect("Key derivation should succeed");
 
-    // Verify all keys are generated
-    assert!(
-        !private_keys.identity().serialize().is_empty(),
-        "Identity key should exist"
-    );
-    assert!(
-        !private_keys
-            .signed_pre_key()
-            .public_key
-            .serialize()
-            .is_empty(),
-        "Signed prekey should exist"
-    );
-    assert!(
-        !private_keys
-            .pq_signed_pre_key()
-            .public_key
-            .serialize()
-            .is_empty(),
-        "PQ prekey should exist"
-    );
+    assert!(!private_keys.identity().to_bytes().is_empty());
+    assert!(!private_keys.identity_dh().to_bytes().is_empty());
+    assert!(!private_keys.signed_pre_key().to_bytes().is_empty());
 }
 
 #[test]
 fn test_deterministic_key_derivation() {
-    // Same recovery key should produce same keys
     let recovery_key = SyftRecoveryKey::generate();
 
-    let keys1 = recovery_key
-        .derive_keys()
-        .expect("First derivation should succeed");
-    let keys2 = recovery_key
-        .derive_keys()
-        .expect("Second derivation should succeed");
+    let keys1 = recovery_key.derive_keys().expect("first derivation");
+    let keys2 = recovery_key.derive_keys().expect("second derivation");
 
-    // Compare identity keys
+    assert_eq!(keys1.identity().to_bytes(), keys2.identity().to_bytes());
     assert_eq!(
-        keys1.identity().serialize(),
-        keys2.identity().serialize(),
-        "Identity keys should match"
-    );
-
-    // Compare signed prekeys
-    assert_eq!(
-        keys1.signed_pre_key().public_key.serialize(),
-        keys2.signed_pre_key().public_key.serialize(),
-        "Signed prekeys should match"
+        keys1.identity_dh().to_bytes(),
+        keys2.identity_dh().to_bytes()
     );
     assert_eq!(
-        keys1.signed_pre_key().private_key.serialize(),
-        keys2.signed_pre_key().private_key.serialize(),
-        "Signed prekey private keys should match"
-    );
-
-    // Compare PQ prekeys
-    assert_eq!(
-        keys1.pq_signed_pre_key().public_key.serialize(),
-        keys2.pq_signed_pre_key().public_key.serialize(),
-        "PQ prekeys should match"
-    );
-    assert_eq!(
-        keys1.pq_signed_pre_key().secret_key.serialize(),
-        keys2.pq_signed_pre_key().secret_key.serialize(),
-        "PQ prekey secret keys should match"
+        keys1.signed_pre_key().to_bytes(),
+        keys2.signed_pre_key().to_bytes()
     );
 }
 
 #[test]
 fn test_different_recovery_keys_produce_different_keys() {
-    // Different recovery keys should produce different keys
     let recovery_key1 = SyftRecoveryKey::generate();
     let recovery_key2 = SyftRecoveryKey::generate();
 
-    let keys1 = recovery_key1
-        .derive_keys()
-        .expect("First derivation should succeed");
-    let keys2 = recovery_key2
-        .derive_keys()
-        .expect("Second derivation should succeed");
+    let keys1 = recovery_key1.derive_keys().expect("first derivation");
+    let keys2 = recovery_key2.derive_keys().expect("second derivation");
 
-    // Identity keys should be different
+    assert_ne!(keys1.identity().to_bytes(), keys2.identity().to_bytes());
     assert_ne!(
-        keys1.identity().serialize(),
-        keys2.identity().serialize(),
-        "Identity keys should be different"
+        keys1.identity_dh().to_bytes(),
+        keys2.identity_dh().to_bytes()
     );
-
-    // Signed prekeys should be different
     assert_ne!(
-        keys1.signed_pre_key().public_key.serialize(),
-        keys2.signed_pre_key().public_key.serialize(),
-        "Signed prekeys should be different"
-    );
-
-    // PQ prekeys should be different
-    assert_ne!(
-        keys1.pq_signed_pre_key().public_key.serialize(),
-        keys2.pq_signed_pre_key().public_key.serialize(),
-        "PQ prekeys should be different"
+        keys1.signed_pre_key().to_bytes(),
+        keys2.signed_pre_key().to_bytes()
     );
 }
 
 #[test]
 fn test_recovery_key_hex_roundtrip_with_derived_keys() {
-    // Verify that hex serialization + deserialization produces same keys
     let recovery_key = SyftRecoveryKey::generate();
-    let original_keys = recovery_key
-        .derive_keys()
-        .expect("Original derivation should succeed");
+    let original_keys = recovery_key.derive_keys().expect("original derivation");
 
-    // Serialize to hex and back
     let hex = recovery_key.to_hex_string();
-    let recovered_key = SyftRecoveryKey::from_hex_string(&hex).expect("Should parse hex");
-    let recovered_keys = recovered_key
-        .derive_keys()
-        .expect("Recovered derivation should succeed");
+    let recovered_key = SyftRecoveryKey::from_hex_string(&hex).expect("parse hex");
+    let recovered_keys = recovered_key.derive_keys().expect("recovered derivation");
 
-    // Keys should match
     assert_eq!(
-        original_keys.identity().serialize(),
-        recovered_keys.identity().serialize(),
-        "Identity keys should match after hex roundtrip"
+        original_keys.identity().to_bytes(),
+        recovered_keys.identity().to_bytes()
     );
     assert_eq!(
-        original_keys.signed_pre_key().public_key.serialize(),
-        recovered_keys.signed_pre_key().public_key.serialize(),
-        "Signed prekeys should match after hex roundtrip"
+        original_keys.identity_dh().to_bytes(),
+        recovered_keys.identity_dh().to_bytes()
     );
     assert_eq!(
-        original_keys.pq_signed_pre_key().public_key.serialize(),
-        recovered_keys.pq_signed_pre_key().public_key.serialize(),
-        "PQ prekeys should match after hex roundtrip"
+        original_keys.signed_pre_key().to_bytes(),
+        recovered_keys.signed_pre_key().to_bytes()
     );
 }
 
 #[test]
 fn test_derived_keys_can_create_public_bundle() {
-    // Verify derived keys can be used to create a public key bundle
     let recovery_key = SyftRecoveryKey::generate();
     let private_keys = recovery_key
         .derive_keys()
-        .expect("Key derivation should succeed");
+        .expect("derivation should succeed");
 
-    // Create public bundle
     let public_bundle = private_keys
         .to_public_bundle(&mut rand::rng())
-        .expect("Should create public bundle");
+        .expect("should create public bundle");
 
-    // Verify signatures are valid
-    assert!(
-        public_bundle.verify_signatures(),
-        "Public bundle signatures should be valid"
-    );
+    assert!(public_bundle.verify_signatures());
 
-    // Verify public keys match private keys
     assert_eq!(
-        public_bundle.signal_identity_public_key.serialize(),
-        private_keys.identity().identity_key().serialize(),
-        "Public identity key should match private key"
+        public_bundle.identity_signing_public_key.as_bytes(),
+        private_keys.identity().verifying_key().as_bytes()
     );
     assert_eq!(
-        public_bundle.signal_signed_public_pre_key.serialize(),
-        private_keys.signed_pre_key().public_key.serialize(),
-        "Public signed prekey should match private key"
+        public_bundle.identity_dh_public_key.as_bytes(),
+        X25519PublicKey::from(private_keys.identity_dh()).as_bytes()
     );
     assert_eq!(
-        public_bundle.signal_pq_public_pre_key.serialize(),
-        private_keys.pq_signed_pre_key().public_key.serialize(),
-        "Public PQ prekey should match private key"
+        public_bundle.signed_prekey_public_key.as_bytes(),
+        X25519PublicKey::from(private_keys.signed_pre_key()).as_bytes()
     );
 }

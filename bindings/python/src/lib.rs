@@ -5,6 +5,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::useless_conversion)]
 
+use ed25519_dalek::VerifyingKey;
 use pyo3::Bound;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -142,7 +143,7 @@ impl PySyftPublicKeyBundle {
     /// Serialized identity public key bytes (for signature verification).
     #[getter]
     pub fn identity_key_bytes<'py>(&self, py: Python<'py>) -> Py<PyBytes> {
-        PyBytes::new(py, &self.inner.signal_identity_public_key.serialize()).into()
+        PyBytes::new(py, self.inner.identity_signing_public_key.as_bytes()).into()
     }
 
     /// Verify bundle signatures.
@@ -261,7 +262,10 @@ pub fn compute_key_fingerprint(key_bytes: &[u8]) -> String {
 
 #[pyfunction]
 pub fn compute_identity_fingerprint(identity_key_bytes: &[u8]) -> PyResult<String> {
-    let identity_key = libsignal_protocol::IdentityKey::decode(identity_key_bytes)
+    let identity_key_bytes: [u8; 32] = identity_key_bytes
+        .try_into()
+        .map_err(|_| PyValueError::new_err("invalid identity key bytes"))?;
+    let identity_key = VerifyingKey::from_bytes(&identity_key_bytes)
         .map_err(|_| PyValueError::new_err("invalid identity key bytes"))?;
     Ok(protocol::compute_identity_fingerprint(&identity_key))
 }
@@ -283,7 +287,10 @@ pub fn verify_envelope_signature(
     envelope: &PyParsedEnvelope,
     sender_identity_key: &[u8],
 ) -> PyResult<()> {
-    let identity_key = libsignal_protocol::IdentityKey::decode(sender_identity_key)
+    let identity_key_bytes: [u8; 32] = sender_identity_key
+        .try_into()
+        .map_err(|_| PyValueError::new_err("invalid sender identity key"))?;
+    let identity_key = VerifyingKey::from_bytes(&identity_key_bytes)
         .map_err(|_| PyValueError::new_err("invalid sender identity key"))?;
     protocol::envelope::verify_signature(&envelope.inner, &identity_key).map_err(to_py_err)
 }

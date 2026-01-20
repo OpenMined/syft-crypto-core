@@ -238,7 +238,7 @@ fn test_save_produces_valid_json() {
         json.get("signed_prekey").is_some(),
         "Should have signed_prekey"
     );
-    assert!(json.get("pq_prekey").is_some(), "Should have pq_prekey");
+    assert!(json.get("identity_dh").is_some(), "Should have identity_dh");
 }
 
 /// Cross-platform test: verify atomic write behavior (file only appears when complete).

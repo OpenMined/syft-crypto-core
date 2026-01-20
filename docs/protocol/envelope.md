@@ -1,12 +1,12 @@
-# SYC1 Envelope Format
+# SYC2 Envelope Format
 
-This document describes the “SYC1” envelope implemented inside the CLI. The structure mirrors the Signal-compatible container we now produce with real fingerprints, signatures, and payloads. The JSON sample below still shows placeholder values for readability, but production builds populate those fields with the actual libsignal-derived data.
+This document describes the “SYC2” envelope implemented inside the CLI. The JSON sample below still shows placeholder values for readability, but production builds populate those fields with the actual Syft crypto data.
 
 ---
 
 ## High-Level Goals
 
-- Detect encrypted assets by peeking at a fixed header (`SYC1`) instead of relying on file extensions.
+- Detect encrypted assets by peeking at a fixed header (`SYC2`) instead of relying on file extensions.
 - Carry signer and recipient metadata in a canonical JSON prelude so tooling (`syc file inspect`) can expose context without touching ciphertext.
 - Allow signature verification prior to decryption and support optional payload integrity checks.
 - Prevent the need for sidecar files which ensures atomicity when dealing with each file
@@ -25,10 +25,10 @@ This document describes the “SYC1” envelope implemented inside the CLI. The 
                                                                        CIPHERTEXT STREAM
 ```
 
-The header is binary. If you dump the file as UTF‑8 you may see odd characters such as `}` right after `SYC1`. That’s simply the little-endian representation of the prelude length (`0x7D` = 125) and signature length (`0x1D` = 29) landing on printable ASCII. Use `hexdump -C` to inspect the structure; you’ll see the magic (`53 59 43 31`), version byte, 4-byte prelude length, canonical JSON prelude (padded to 4 KiB), 2-byte signature length, the detached signature, and finally the ciphertext.
+The header is binary. If you dump the file as UTF‑8 you may see odd characters such as `}` right after `SYC2`. That’s simply the little-endian representation of the prelude length (`0x7D` = 125) and signature length (`0x1D` = 29) landing on printable ASCII. Use `hexdump -C` to inspect the structure; you’ll see the magic (`53 59 43 32`), version byte, 4-byte prelude length, canonical JSON prelude (padded to 4 KiB), 2-byte signature length, the detached signature, and finally the ciphertext.
 
 1. **Magic + Version**
-   - Magic: ASCII `SYC1`.
+   - Magic: ASCII `SYC2`.
    - Version: single byte (`1` for the current version).
 2. **Prelude Length**
    - Unsigned 32-bit little-endian integer describing the canonical JSON prelude length (in bytes).
@@ -41,7 +41,7 @@ The header is binary. If you dump the file as UTF‑8 you may see odd characters
 5. **Signature**
    - Signature bytes. Currently this is a deterministic placeholder.
 6. **Ciphertext**
-   - Remainder of the file: the encrypted payload emitted by the libsignal file layer.
+   - Remainder of the file: the encrypted payload emitted by the Syft file cipher.
 
 ![](./evelope-structure.png)
 
@@ -63,7 +63,6 @@ The header is binary. If you dump the file as UTF‑8 you may see odd characters
 			"identity": "bob@example.org",
 			"device_label": "default",
 			"spk_fingerprint": "sha256hex...",
-			"pqspk_fingerprint": "sha256hex...",
 			"signed_prekey_id": 1,
 		},
 	],
@@ -73,7 +72,7 @@ The header is binary. If you dump the file as UTF‑8 you may see odd characters
 			"recipient_identity": "bob@example.org",
 			"device_label": "default",
 			"wrap_ephemeral_public": "base64url(x25519)",
-			"wrap_ciphertext": "base64url(kyber)",
+			"wrap_ciphertext": "base64url(wrapped_key)",
 		},
 	],
 	"cipher": {
@@ -90,11 +89,11 @@ The header is binary. If you dump the file as UTF‑8 you may see odd characters
 }
 ```
 
-Fields correspond to libsignal terminology:
+Fields correspond to Syft terminology:
 
 - `sender.identity` / `sender.ik_fingerprint` describe the author (later derived from the Ed25519 identity key).
-- Each entry in `recipients` mirrors a device binding: signed prekey fingerprint, PQ prekey fingerprint, and the signed prekey ID.
-- `wrappings` contain PQXDH outputs: sender’s ephemeral public key and Kyber ciphertext for each target device.
+- Each entry in `recipients` mirrors a device binding: signed prekey fingerprint and the signed prekey ID.
+- `wrappings` contain X3DH outputs: sender’s ephemeral public key and the wrapped file key for each target device.
 - `cipher` summarises the Double Ratchet file-layer stats so `inspect` can report segment sizes without decryption.
 - `integrity` will eventually hold a base64url SHA-256 hash of the ciphertext for tamper detection.
 - `public_meta` carries small hints (e.g., `filename_hint`) that do not compromise confidentiality.

@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::keys::{SyftPublicKeyBundle, compute_key_fingerprint};
-use libsignal_protocol::{IdentityKey, IdentityKeyPair};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,13 +11,13 @@ use serde_json::json;
 use std::convert::TryFrom;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const MAGIC: &[u8; 4] = b"SYC1";
+pub const MAGIC: &[u8; 4] = b"SYC2";
 pub const CURRENT_VERSION: u8 = 1;
 pub const PRELUDE_PAD: usize = 4096;
 const ED25519_SIGNATURE_LEN: usize = 64;
 const MAX_PRELUDE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
 const MAX_RECIPIENTS: usize = 1000;
-const SIGNING_CONTEXT: &[u8] = b"SYC1-PRELUDE";
+const SIGNING_CONTEXT: &[u8] = b"SYC2-PRELUDE";
 
 /// Payload data for envelope construction.
 pub struct EnvelopePayload<'a> {
@@ -57,8 +57,6 @@ pub struct RecipientInfo {
     pub device_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spk_fingerprint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pqspk_fingerprint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signed_prekey_id: Option<u32>,
 }
@@ -202,14 +200,14 @@ fn parse_signature_section(bytes: &[u8], cursor: usize) -> Result<(Vec<u8>, usiz
 ///
 /// This function parses the binary SYC envelope format and extracts all components:
 /// the prelude metadata, signature, and ciphertext. The envelope format is designed
-/// for hybrid encryption with post-quantum security.
+/// for hybrid encryption.
 ///
 /// # SYC Envelope Binary Format
 ///
 /// The envelope has the following structure:
 /// ```text
 /// ┌─────────────────────────────────────────────────────────────┐
-/// │ Magic (4 bytes): b"SYC1"                                     │
+/// │ Magic (4 bytes): b"SYC2"                                     │
 /// ├─────────────────────────────────────────────────────────────┤
 /// │ Version (1 byte): 1                                          │
 /// ├─────────────────────────────────────────────────────────────┤
@@ -225,8 +223,8 @@ fn parse_signature_section(bytes: &[u8], cursor: usize) -> Result<(Vec<u8>, usiz
 /// │ - Signs the prelude bytes (before padding)                  │
 /// ├─────────────────────────────────────────────────────────────┤
 /// │ Ciphertext (remainder of file)                              │
-/// │ - Encrypted with AES-256-GCM                                │
-/// │ - Key wrapped using PQXDH (X25519 + Kyber1024)             │
+/// │ - Encrypted with XChaCha20-Poly1305                        │
+/// │ - Key wrapped using X3DH-style X25519                      │
 /// └─────────────────────────────────────────────────────────────┘
 /// ```
 ///
@@ -283,7 +281,7 @@ fn parse_signature_section(bytes: &[u8], cursor: usize) -> Result<(Vec<u8>, usiz
 ///
 /// # See Also
 ///
-/// - `build_envelope_with_wrappings()` - Creates envelopes with real signatures and PQXDH wrappings
+/// - `build_envelope_with_wrappings()` - Creates envelopes with real signatures and X3DH wrappings
 /// - `verify_signature()` - Verifies the envelope signature after parsing
 pub fn parse_envelope(bytes: &[u8]) -> Result<ParsedEnvelope> {
     // Validate envelope header (magic bytes + version)
@@ -324,22 +322,20 @@ pub fn parse_envelope(bytes: &[u8]) -> Result<ParsedEnvelope> {
 /// Sign envelope prelude with sender's identity private key.
 fn sign_prelude<R: rand::CryptoRng + rand::Rng>(
     prelude_bytes: &[u8],
-    identity_key_pair: &IdentityKeyPair,
-    rng: &mut R,
+    identity_key_pair: &SigningKey,
+    _rng: &mut R,
 ) -> Result<Box<[u8]>> {
     let message = signing_message(prelude_bytes);
-    identity_key_pair
-        .private_key()
-        .calculate_signature(&message, rng)
-        .map_err(|e| format!("Failed to sign envelope prelude: {}", e).into())
+    let signature = identity_key_pair.sign(&message);
+    Ok(signature.to_bytes().to_vec().into_boxed_slice())
 }
 
 /// Verify envelope signature using sender's identity public key.
 pub fn verify_signature(
     parsed_envelope: &ParsedEnvelope,
-    sender_identity_key: &IdentityKey,
+    sender_identity_key: &VerifyingKey,
 ) -> Result<()> {
-    let expected_fingerprint = compute_key_fingerprint(&sender_identity_key.serialize());
+    let expected_fingerprint = compute_key_fingerprint(sender_identity_key.as_bytes());
     if !fingerprints_match(
         &expected_fingerprint,
         &parsed_envelope.prelude.sender.ik_fingerprint,
@@ -348,11 +344,12 @@ pub fn verify_signature(
     }
 
     let message = signing_message(&parsed_envelope.prelude_bytes);
-    let valid = sender_identity_key
-        .public_key()
-        .verify_signature(&message, &parsed_envelope.signature);
-
-    if !valid {
+    let signature = ed25519_dalek::Signature::from_slice(&parsed_envelope.signature)
+        .map_err(|_| "SYC envelope signature verification failed")?;
+    if sender_identity_key
+        .verify_strict(&message, &signature)
+        .is_err()
+    {
         return Err("SYC envelope signature verification failed".into());
     }
     Ok(())
@@ -386,7 +383,7 @@ fn build_prelude(
 
     // Compute real fingerprint for sender's identity key
     let sender_ik_fingerprint =
-        compute_key_fingerprint(&sender_public_bundle.signal_identity_public_key.serialize());
+        compute_key_fingerprint(sender_public_bundle.identity_signing_public_key.as_bytes());
 
     let sender_info = SenderInfo {
         identity: sender_identity.to_owned(),
@@ -404,14 +401,11 @@ fn build_prelude(
             .into());
         }
         let spk_fingerprint =
-            compute_key_fingerprint(&recipient_bundle.signal_signed_public_pre_key.serialize());
-        let pqspk_fingerprint =
-            compute_key_fingerprint(&recipient_bundle.signal_pq_public_pre_key.serialize());
+            compute_key_fingerprint(recipient_bundle.signed_prekey_public_key.as_bytes());
         recipients_infos.push(RecipientInfo {
             identity: Some(recipient_identity.clone()),
             device_label: Some("default".into()), // set to "default" as a placeholder because the current implementation doesn't have a multi-device system yet
             spk_fingerprint: Some(spk_fingerprint),
-            pqspk_fingerprint: Some(pqspk_fingerprint),
             signed_prekey_id: Some(1), // Key rotation not yet supported => Always using ID 1
         });
     }
@@ -423,7 +417,7 @@ fn build_prelude(
     // Compute recipient set fingerprint from all recipient identity fingerprints using length-prefixing
     let mut recipient_fps: Vec<String> = recipients
         .iter()
-        .map(|(_, bundle)| compute_key_fingerprint(&bundle.signal_identity_public_key.serialize()))
+        .map(|(_, bundle)| compute_key_fingerprint(bundle.identity_signing_public_key.as_bytes()))
         .collect();
     recipient_fps.sort();
     let mut combined = Vec::with_capacity(recipient_fps.len() * (std::mem::size_of::<u32>() + 64));
@@ -468,12 +462,12 @@ fn build_prelude(
     })
 }
 
-/// Build a complete SYC envelope with real cryptographic signatures and PQXDH wrappings.
+/// Build a complete SYC envelope with real cryptographic signatures and X3DH wrappings.
 ///
 /// This creates an envelope with:
 /// - Real fingerprints from actual public keys
 /// - Real Ed25519 signature of the prelude
-/// - Real PQXDH wrappings for key encapsulation
+/// - Real X3DH wrappings for key encapsulation
 /// - Proper envelope structure with magic, version, padding, etc.
 ///
 /// # Arguments
@@ -481,7 +475,7 @@ fn build_prelude(
 /// * `sender_identity_key_pair` - Sender's identity key pair for signing
 /// * `sender_public_bundle` - Sender's public key bundle
 /// * `recipients` - Vector of (identity, public_bundle) tuples for each recipient
-/// * `wrappings` - PQXDH key wrappings (ephemeral keys + Kyber ciphertext)
+/// * `wrappings` - X3DH key wrappings (ephemeral keys + wrapped file key)
 /// * `payload` - Envelope payload with ciphertext and metadata
 /// * `rng` - Cryptographically secure random number generator
 ///
@@ -489,11 +483,11 @@ fn build_prelude(
 /// The complete envelope bytes ready for storage/transmission
 ///
 /// # Note
-/// This is typically called from `encrypt_message()` which handles PQXDH wrapping.
+/// This is typically called from `encrypt_message()` which handles X3DH wrapping.
 /// Do not use this directly unless you're implementing custom encryption logic.
 pub fn build_envelope_with_wrappings<R: rand::CryptoRng + rand::Rng>(
     sender_identity: &str,
-    sender_identity_key_pair: &IdentityKeyPair,
+    sender_identity_key_pair: &SigningKey,
     sender_public_bundle: &SyftPublicKeyBundle,
     recipients: &[(String, SyftPublicKeyBundle)],
     wrappings: &[WrappingInfo],
@@ -509,7 +503,8 @@ pub fn build_envelope_with_wrappings<R: rand::CryptoRng + rand::Rng>(
     }
 
     // Verify that the identity key pair matches the public bundle
-    if sender_identity_key_pair.identity_key() != &sender_public_bundle.signal_identity_public_key {
+    if sender_identity_key_pair.verifying_key() != sender_public_bundle.identity_signing_public_key
+    {
         return Err("identity key pair does not match public bundle".into());
     }
     if !sender_public_bundle.verify_signatures() {

@@ -4,10 +4,10 @@ use syft_crypto_protocol::{SyftRecoveryKey, compute_identity_fingerprint};
 fn test_fingerprint_is_deterministic() {
     let recovery_key = SyftRecoveryKey::generate();
     let private_keys = recovery_key.derive_keys().unwrap();
-    let identity = private_keys.identity().identity_key();
+    let identity = private_keys.identity().verifying_key();
 
-    let fp1 = compute_identity_fingerprint(identity);
-    let fp2 = compute_identity_fingerprint(identity);
+    let fp1 = compute_identity_fingerprint(&identity);
+    let fp2 = compute_identity_fingerprint(&identity);
 
     assert_eq!(fp1, fp2, "Same key should produce same fingerprint");
 }
@@ -17,8 +17,8 @@ fn test_different_keys_different_fingerprints() {
     let key1 = SyftRecoveryKey::generate().derive_keys().unwrap();
     let key2 = SyftRecoveryKey::generate().derive_keys().unwrap();
 
-    let fp1 = compute_identity_fingerprint(key1.identity().identity_key());
-    let fp2 = compute_identity_fingerprint(key2.identity().identity_key());
+    let fp1 = compute_identity_fingerprint(&key1.identity().verifying_key());
+    let fp2 = compute_identity_fingerprint(&key2.identity().verifying_key());
 
     assert_ne!(
         fp1, fp2,
@@ -30,7 +30,7 @@ fn test_different_keys_different_fingerprints() {
 fn test_fingerprint_format() {
     let recovery_key = SyftRecoveryKey::generate();
     let private_keys = recovery_key.derive_keys().unwrap();
-    let fingerprint = compute_identity_fingerprint(private_keys.identity().identity_key());
+    let fingerprint = compute_identity_fingerprint(&private_keys.identity().verifying_key());
 
     assert_eq!(
         fingerprint.len(),
@@ -47,7 +47,7 @@ fn test_fingerprint_format() {
 fn test_fingerprint_is_lowercase_hex() {
     let recovery_key = SyftRecoveryKey::generate();
     let private_keys = recovery_key.derive_keys().unwrap();
-    let fingerprint = compute_identity_fingerprint(private_keys.identity().identity_key());
+    let fingerprint = compute_identity_fingerprint(&private_keys.identity().verifying_key());
 
     // hex::encode produces lowercase hex
     assert!(
@@ -64,14 +64,14 @@ fn test_fingerprint_from_recovered_key_matches() {
     let original_recovery = SyftRecoveryKey::generate();
     let original_keys = original_recovery.derive_keys().unwrap();
     let original_fingerprint =
-        compute_identity_fingerprint(original_keys.identity().identity_key());
+        compute_identity_fingerprint(&original_keys.identity().verifying_key());
 
     // Convert to mnemonic and recover
     let mnemonic = original_recovery.to_mnemonic();
     let recovered_recovery = SyftRecoveryKey::from_mnemonic(&mnemonic).unwrap();
     let recovered_keys = recovered_recovery.derive_keys().unwrap();
     let recovered_fingerprint =
-        compute_identity_fingerprint(recovered_keys.identity().identity_key());
+        compute_identity_fingerprint(&recovered_keys.identity().verifying_key());
 
     assert_eq!(
         original_fingerprint, recovered_fingerprint,
@@ -86,10 +86,10 @@ fn test_fingerprint_matches_public_bundle() {
     let public_bundle = private_keys.to_public_bundle(&mut rand::rng()).unwrap();
 
     // Fingerprint from private key
-    let fp_from_private = compute_identity_fingerprint(private_keys.identity().identity_key());
+    let fp_from_private = compute_identity_fingerprint(&private_keys.identity().verifying_key());
 
     // Fingerprint from public bundle
-    let fp_from_public = compute_identity_fingerprint(&public_bundle.signal_identity_public_key);
+    let fp_from_public = compute_identity_fingerprint(&public_bundle.identity_signing_public_key);
 
     assert_eq!(
         fp_from_private, fp_from_public,

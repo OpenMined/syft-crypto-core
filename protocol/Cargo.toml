@@ -1,6 +1,6 @@
 [package]
 name = "syft-crypto-protocol"
-description = "Post-quantum cryptographic protocol implementation for SyftBox using Signal's PQXDH"
+description = "Cryptographic protocol implementation for SyftBox using X3DH-style key agreement"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -12,8 +12,10 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-libsignal-protocol.workspace = true
+ed25519-dalek.workspace = true
+x25519-dalek.workspace = true
 rand.workspace = true
+rand_core.workspace = true
 hex.workspace = true
 hkdf.workspace = true
 sha2.workspace = true

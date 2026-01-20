@@ -1,22 +1,22 @@
-//! Key structures for SyftBox PQXDH protocol
+//! Key structures for SyftBox X3DH-style protocol.
 //!
-//! This module defines the key types used in the SyftBox PQXDH protocol:
+//! This module defines the key types used in the SyftBox protocol:
 //! - SyftRecoveryKey: 32-byte master secret for deterministic key derivation
 //! - SyftPrivateKeys: Container for all private key material
 //! - SyftPublicKeyBundle: Container for all public keys and signatures
 //!
-//! The Syft keys wrap libsignal_protocol keys:
-//! - IdentityKeyPair: Ed25519 keypair for signing
-//! - SignedPreKey: X25519 keypair for ECDH
-//! - PQSignedPreKey: Kyber1024 keypair for post-quantum KEM
+//! The Syft keys use:
+//! - Ed25519 for identity signing
+//! - X25519 for identity DH and signed prekeys
 
 use crate::error::{RecoveryError, RecoveryResult};
-use libsignal_protocol::{IdentityKey, IdentityKeyPair, KeyPair, PublicKey, kem};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Compute SHA-256 fingerprint of any public key bytes.
 pub fn compute_key_fingerprint(key_bytes: &[u8]) -> String {
@@ -40,11 +40,11 @@ pub fn compute_key_fingerprint(key_bytes: &[u8]) -> String {
 ///
 /// let recovery_key = SyftRecoveryKey::generate();
 /// let private_keys = recovery_key.derive_keys().unwrap();
-/// let fingerprint = compute_identity_fingerprint(private_keys.identity().identity_key());
+/// let fingerprint = compute_identity_fingerprint(&private_keys.identity().verifying_key());
 /// assert_eq!(fingerprint.len(), 64); // SHA-256 = 32 bytes = 64 hex chars
 /// ```
-pub fn compute_identity_fingerprint(identity_key: &IdentityKey) -> String {
-    compute_key_fingerprint(&identity_key.serialize())
+pub fn compute_identity_fingerprint(identity_key: &VerifyingKey) -> String {
+    compute_key_fingerprint(identity_key.as_bytes())
 }
 
 /// 32-byte recovery key that deterministically derives all private keys.
@@ -213,7 +213,6 @@ impl SyftRecoveryKey {
     /// ```
     pub fn derive_keys(&self) -> RecoveryResult<SyftPrivateKeys> {
         use hkdf::Hkdf;
-        use rand::SeedableRng;
         use sha2::Sha256;
 
         let recovery_key_bytes = self.as_bytes();
@@ -221,120 +220,88 @@ impl SyftRecoveryKey {
         // HKDF instance for all key derivations
         let hk = Hkdf::<Sha256>::new(None, recovery_key_bytes);
 
-        // 1. Derive identity key pair (Ed25519)
-        let mut identity_seed = [0u8; 32];
-        hk.expand(b"SyftBox_Identity_Key_v1", &mut identity_seed)
+        // 1. Derive identity signing key (Ed25519)
+        let mut identity_sign_seed = Zeroizing::new([0u8; 32]);
+        hk.expand(
+            b"SyftBox_Identity_Signing_Key_v1",
+            identity_sign_seed.as_mut(),
+        )
+        .map_err(|_| RecoveryError::DerivationFailed)?;
+        let identity_signing_key = SigningKey::from_bytes(&identity_sign_seed);
+
+        // 2. Derive identity DH key (X25519)
+        let mut identity_dh_seed = Zeroizing::new([0u8; 32]);
+        hk.expand(b"SyftBox_Identity_DH_Key_v1", identity_dh_seed.as_mut())
             .map_err(|_| RecoveryError::DerivationFailed)?;
+        let identity_dh_key = StaticSecret::from(*identity_dh_seed);
 
-        let mut identity_rng = rand::rngs::StdRng::from_seed(identity_seed);
-        let signal_identity_key_pair = IdentityKeyPair::generate(&mut identity_rng);
-
-        // 2. Derive signed prekey (X25519)
-        let mut spk_seed = [0u8; 32];
-        hk.expand(b"SyftBox_Signed_Prekey_v1", &mut spk_seed)
+        // 3. Derive signed prekey (X25519)
+        let mut spk_seed = Zeroizing::new([0u8; 32]);
+        hk.expand(b"SyftBox_Signed_Prekey_v1", spk_seed.as_mut())
             .map_err(|_| RecoveryError::DerivationFailed)?;
-
-        let mut spk_rng = rand::rngs::StdRng::from_seed(spk_seed);
-        let signal_signed_pre_key_pair = KeyPair::generate(&mut spk_rng);
-
-        // 3. Derive PQ prekey (Kyber1024)
-        let mut pqspk_seed = [0u8; 32];
-        hk.expand(b"SyftBox_PQ_Prekey_v1", &mut pqspk_seed)
-            .map_err(|_| RecoveryError::DerivationFailed)?;
-
-        let mut pqspk_rng = rand::rngs::StdRng::from_seed(pqspk_seed);
-        let signal_pq_signed_pre_key_pair =
-            kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut pqspk_rng);
+        let signed_pre_key = StaticSecret::from(*spk_seed);
 
         Ok(SyftPrivateKeys {
-            signal_identity_key_pair: Sensitive::new(signal_identity_key_pair),
-            signal_signed_pre_key_pair: Sensitive::new(signal_signed_pre_key_pair),
-            signal_pq_signed_pre_key_pair: Sensitive::new(signal_pq_signed_pre_key_pair),
+            identity_signing_key: Sensitive::new(identity_signing_key),
+            identity_dh_key: Sensitive::new(identity_dh_key),
+            signed_pre_key: Sensitive::new(signed_pre_key),
         })
     }
 }
 
-/// Container for all private key material needed for PQXDH.
+/// Container for all private key material needed for X3DH-style key agreement.
 ///
-/// Bundles identity key pair (Ed25519), signed prekey pair (X25519), and PQ prekey pair (Kyber1024).
+/// Bundles identity signing key (Ed25519), identity DH key (X25519), and signed prekey (X25519).
 pub struct SyftPrivateKeys {
-    /// Ed25519 identity key pair for signing (wrapped to ensure zeroization).
-    signal_identity_key_pair: Sensitive<IdentityKeyPair>,
-    /// X25519 signed prekey pair for ECDH (wrapped to ensure zeroization).
-    signal_signed_pre_key_pair: Sensitive<KeyPair>,
-    /// Kyber1024 PQ signed prekey for KEM (wrapped to ensure zeroization).
-    signal_pq_signed_pre_key_pair: Sensitive<kem::KeyPair>,
+    /// Ed25519 identity signing key.
+    identity_signing_key: Sensitive<SigningKey>,
+    /// X25519 identity DH key.
+    identity_dh_key: Sensitive<StaticSecret>,
+    /// X25519 signed prekey.
+    signed_pre_key: Sensitive<StaticSecret>,
 }
 
 impl SyftPrivateKeys {
     /// Create a new container for private key material.
     pub fn new(
-        identity: IdentityKeyPair,
-        signed_pre_key: KeyPair,
-        pq_signed_pre_key: kem::KeyPair,
+        identity_signing_key: SigningKey,
+        identity_dh_key: StaticSecret,
+        signed_pre_key: StaticSecret,
     ) -> Self {
         Self {
-            signal_identity_key_pair: Sensitive::new(identity),
-            signal_signed_pre_key_pair: Sensitive::new(signed_pre_key),
-            signal_pq_signed_pre_key_pair: Sensitive::new(pq_signed_pre_key),
+            identity_signing_key: Sensitive::new(identity_signing_key),
+            identity_dh_key: Sensitive::new(identity_dh_key),
+            signed_pre_key: Sensitive::new(signed_pre_key),
         }
     }
 
-    /// Borrow the identity key pair.
-    pub fn identity(&self) -> &IdentityKeyPair {
-        &self.signal_identity_key_pair
+    /// Borrow the identity signing key.
+    pub fn identity(&self) -> &SigningKey {
+        &self.identity_signing_key
     }
 
-    /// Borrow the signed prekey pair.
-    pub fn signed_pre_key(&self) -> &KeyPair {
-        &self.signal_signed_pre_key_pair
+    /// Borrow the identity DH key.
+    pub fn identity_dh(&self) -> &StaticSecret {
+        &self.identity_dh_key
     }
 
-    /// Borrow the PQ signed prekey pair.
-    pub fn pq_signed_pre_key(&self) -> &kem::KeyPair {
-        &self.signal_pq_signed_pre_key_pair
+    /// Borrow the signed prekey.
+    pub fn signed_pre_key(&self) -> &StaticSecret {
+        &self.signed_pre_key
     }
 
     /// Create public key bundle with all public keys and signatures.
     pub fn to_public_bundle<R: rand::CryptoRng + rand::Rng>(
         &self,
-        rng: &mut R,
-    ) -> Result<SyftPublicKeyBundle, libsignal_protocol::SignalProtocolError> {
-        SyftPublicKeyBundle::new(
-            self.identity(),
-            self.signed_pre_key(),
-            self.pq_signed_pre_key(),
-            rng,
-        )
+        _rng: &mut R,
+    ) -> Result<SyftPublicKeyBundle, crate::error::KeyError> {
+        SyftPublicKeyBundle::new(self.identity(), self.identity_dh(), self.signed_pre_key())
     }
 }
 
 /// Wrapper that zeroizes contained data immediately after it has been dropped.
 ///
-/// # Why This Exists
-///
-/// Ideally we would use `zeroize::Zeroizing<T>` which provides safe, guaranteed
-/// zeroization. However, the libsignal-protocol types (`IdentityKeyPair`, `KeyPair`,
-/// `kem::KeyPair`) do not implement the `Zeroize` trait, so we cannot use the safe API.
-///
-/// If libsignal-protocol-syft added `Zeroize` implementations for its key types,
-/// this wrapper could be removed entirely in favor of `Zeroizing<T>`.
-///
-/// # Why Unsafe Is Required
-///
-/// 1. **Volatile writes** (`std::ptr::write_volatile`): Required to prevent the
-///    compiler from optimizing away the zeroization as a "dead store". There is
-///    no safe API for volatile memory writes in Rust.
-///
-/// 2. **ManuallyDrop::drop**: Required to drop the inner value in-place without
-///    creating a copy. This is unsafe because calling it twice would cause UB.
-///
-/// # Implementation
-///
-/// - The inner value is dropped first (in place, no copy created)
-/// - Memory is then zeroed using volatile writes
-/// - A guard struct ensures zeroization runs even if the inner Drop panics
-/// - A compiler fence prevents reordering of the volatile writes
+/// This avoids relying on `Zeroize` implementations for external key types.
 struct Sensitive<T>(ManuallyDrop<T>);
 
 impl<T> Sensitive<T> {
@@ -359,9 +326,6 @@ impl<T> DerefMut for Sensitive<T> {
 
 impl<T> Drop for Sensitive<T> {
     fn drop(&mut self) {
-        // Guard struct ensures zeroization runs even if dropping `T` panics.
-        // When this guard is dropped (either normally or during unwinding),
-        // it will zero the memory.
         struct ZeroizeGuard {
             ptr: *mut u8,
             size: usize,
@@ -369,14 +333,10 @@ impl<T> Drop for Sensitive<T> {
 
         impl Drop for ZeroizeGuard {
             fn drop(&mut self) {
-                // SAFETY: We have exclusive access to this memory (we're in Drop),
-                // and the pointer was derived from a valid ManuallyDrop<T>.
-                // Volatile writes prevent dead-store elimination.
                 unsafe {
                     for i in 0..self.size {
                         std::ptr::write_volatile(self.ptr.add(i), 0);
                     }
-                    // Ensure writes are not reordered past this point
                     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
                 }
             }
@@ -387,11 +347,8 @@ impl<T> Drop for Sensitive<T> {
             size: std::mem::size_of::<T>(),
         };
 
-        // SAFETY: We only call this once, and self.0 is valid.
-        // We use ManuallyDrop specifically to control drop timing.
         unsafe { ManuallyDrop::drop(&mut self.0) };
 
-        // Guard drops here (or on unwind), zeroing the memory
         drop(guard);
     }
 }
@@ -399,74 +356,78 @@ impl<T> Drop for Sensitive<T> {
 /// Bundle of public keys and signatures for publishing in DID documents.
 #[derive(Clone)]
 pub struct SyftPublicKeyBundle {
-    pub signal_identity_public_key: IdentityKey,
-    pub signal_signed_public_pre_key: PublicKey,
-    pub signal_signed_pre_key_signature: Box<[u8]>,
-    pub signal_pq_public_pre_key: kem::PublicKey,
-    pub signal_pq_pre_key_signature: Box<[u8]>,
+    pub identity_signing_public_key: VerifyingKey,
+    pub identity_dh_public_key: X25519PublicKey,
+    pub identity_dh_signature: Box<[u8]>,
+    pub signed_prekey_public_key: X25519PublicKey,
+    pub signed_prekey_signature: Box<[u8]>,
 }
 
 impl SyftPublicKeyBundle {
     /// Create a new public key bundle from an identity key pair and prekey pairs.
     ///
-    /// This will sign both prekeys with the identity private key.
-    pub fn new<R: rand::CryptoRng + rand::Rng>(
-        identity_key_pair: &IdentityKeyPair,
-        signed_pre_key_pair: &KeyPair,
-        pq_pre_key_pair: &kem::KeyPair,
-        rng: &mut R,
-    ) -> Result<Self, libsignal_protocol::SignalProtocolError> {
-        // Sign the EC prekey
-        let signed_pre_key_signature = identity_key_pair
-            .private_key()
-            .calculate_signature(&signed_pre_key_pair.public_key.serialize(), rng)?;
+    /// This will sign both the identity DH key and the signed prekey with the identity signing key.
+    pub fn new(
+        identity_signing_key: &SigningKey,
+        identity_dh_key: &StaticSecret,
+        signed_pre_key: &StaticSecret,
+    ) -> Result<Self, crate::error::KeyError> {
+        let identity_public_key = identity_signing_key.verifying_key();
+        let identity_dh_public_key = X25519PublicKey::from(identity_dh_key);
+        let signed_pre_key_public = X25519PublicKey::from(signed_pre_key);
 
-        // Sign the PQ prekey
-        let pq_pre_key_signature = identity_key_pair
-            .private_key()
-            .calculate_signature(&pq_pre_key_pair.public_key.serialize(), rng)?;
+        let identity_dh_signature = identity_signing_key
+            .sign(identity_dh_public_key.as_bytes())
+            .to_bytes()
+            .to_vec()
+            .into_boxed_slice();
+
+        let signed_pre_key_signature = identity_signing_key
+            .sign(signed_pre_key_public.as_bytes())
+            .to_bytes()
+            .to_vec()
+            .into_boxed_slice();
 
         Ok(Self {
-            signal_identity_public_key: *identity_key_pair.identity_key(),
-            signal_signed_public_pre_key: signed_pre_key_pair.public_key,
-            signal_signed_pre_key_signature: signed_pre_key_signature,
-            signal_pq_public_pre_key: pq_pre_key_pair.public_key.clone(),
-            signal_pq_pre_key_signature: pq_pre_key_signature,
+            identity_signing_public_key: identity_public_key,
+            identity_dh_public_key,
+            identity_dh_signature,
+            signed_prekey_public_key: signed_pre_key_public,
+            signed_prekey_signature: signed_pre_key_signature,
         })
     }
 
-    /// Verify both signatures in the bundle.
+    /// Verify all signatures in the bundle.
     pub fn verify_signatures(&self) -> bool {
-        let ec_sig_valid = self
-            .signal_identity_public_key
-            .public_key()
-            .verify_signature(
-                &self.signal_signed_public_pre_key.serialize(),
-                &self.signal_signed_pre_key_signature,
-            );
+        let identity_dh_sig = Signature::from_slice(&self.identity_dh_signature).ok();
+        let signed_pre_key_sig = Signature::from_slice(&self.signed_prekey_signature).ok();
 
-        let pq_sig_valid = self
-            .signal_identity_public_key
-            .public_key()
-            .verify_signature(
-                &self.signal_pq_public_pre_key.serialize(),
-                &self.signal_pq_pre_key_signature,
-            );
+        let identity_dh_valid = identity_dh_sig.is_some_and(|sig| {
+            self.identity_signing_public_key
+                .verify_strict(self.identity_dh_public_key.as_bytes(), &sig)
+                .is_ok()
+        });
 
-        ec_sig_valid && pq_sig_valid
+        let signed_pre_key_valid = signed_pre_key_sig.is_some_and(|sig| {
+            self.identity_signing_public_key
+                .verify_strict(self.signed_prekey_public_key.as_bytes(), &sig)
+                .is_ok()
+        });
+
+        identity_dh_valid && signed_pre_key_valid
     }
 
     /// Compute and return the identity public key fingerprint.
     pub fn identity_fingerprint(&self) -> String {
-        compute_identity_fingerprint(&self.signal_identity_public_key)
+        compute_identity_fingerprint(&self.identity_signing_public_key)
     }
 
     /// Get the total size of the bundle in bytes.
     pub fn total_size(&self) -> usize {
-        self.signal_identity_public_key.serialize().len()
-            + self.signal_signed_public_pre_key.serialize().len()
-            + self.signal_signed_pre_key_signature.len()
-            + self.signal_pq_public_pre_key.serialize().len()
-            + self.signal_pq_pre_key_signature.len()
+        self.identity_signing_public_key.as_bytes().len()
+            + self.identity_dh_public_key.as_bytes().len()
+            + self.identity_dh_signature.len()
+            + self.signed_prekey_public_key.as_bytes().len()
+            + self.signed_prekey_signature.len()
     }
 }

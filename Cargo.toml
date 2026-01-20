@@ -12,7 +12,7 @@ authors = [
 ]
 license = "Apache-2.0"
 repository = "https://github.com/OpenMined/syft-crypto-core"
-keywords = ["encryption", "e2e", "signal-protocol", "privacy", "cryptography"]
+keywords = ["encryption", "e2e", "x3dh", "privacy", "cryptography"]
 categories = ["cryptography"]
 rust-version = "1.90.0"
 
@@ -29,9 +29,11 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [workspace.dependencies]
 syft-crypto-protocol = { path = "protocol", version = "0.1.2-beta.2" }
 # Core cryptographic dependencies
-libsignal-protocol = { package = "libsignal-protocol-syft", version = "0.85.3-beta.5" }
+ed25519-dalek = { version = "2", features = ["std", "zeroize"] }
+x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
 rand = "0.9"
 rand_chacha = "0.9"
+rand_core = "0.6"
 hex = "0.4"
 hkdf = "0.12"
 sha2 = "0.10"
@@ -55,11 +57,3 @@ clap = { version = "4", features = ["derive"] }
 
 # Testing dependencies
 tempfile = "3"
-
-[patch.crates-io]
-# Use vendored libsignal with updated hpke-rs to fix yanked libcrux-sha3
-libsignal-protocol-syft = { path = "vendor/libsignal-protocol-syft/crates/libsignal-protocol-syft", version = "0.85.3-beta.5" }
-signal-crypto-syft = { path = "vendor/libsignal-protocol-syft/crates/signal-crypto-syft", version = "0.85.3-beta.5" }
-libsignal-core-syft = { path = "vendor/libsignal-protocol-syft/crates/libsignal-core-syft", version = "0.85.3-beta.5" }
-spqr-syft = { path = "vendor/libsignal-protocol-syft/crates/spqr-syft", version = "0.85.3-beta.5" }
-

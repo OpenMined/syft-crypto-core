@@ -16,7 +16,7 @@ pub(crate) use key::KeyCommand;
 pub(crate) use syft_crypto_protocol::datasite::context::resolve_identity;
 pub(crate) use vault::VaultCommand;
 
-/// Syft Crypto (syc) CLI – manage Signal-compatible post-quantum keys and files.
+/// Syft Crypto (syc) CLI – manage X3DH-style keys and files.
 #[derive(Parser, Debug)]
 #[command(name = "syc", version, about = "Syft Crypto CLI (syc)")]
 pub struct Cli {

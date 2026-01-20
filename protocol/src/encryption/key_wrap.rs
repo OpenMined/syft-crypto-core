@@ -6,12 +6,12 @@ use chacha20poly1305::{
     aead::{Aead, Payload},
 };
 use hkdf::Hkdf;
-use rand::{CryptoRng, Rng};
+use rand::{CryptoRng, RngCore};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-/// HKDF salt for deriving wrapping keys from PQXDH material
-const FILE_HKDF_SALT: &[u8] = b"syc-crypto-core:pqxdh:file";
+/// HKDF salt for deriving wrapping keys from X3DH material
+const FILE_HKDF_SALT: &[u8] = b"syc-crypto-core:x3dh:file";
 
 /// HKDF info parameter for key wrapping derivation
 const KEY_WRAP_INFO: &[u8] = b"syc-wrap-key";
@@ -22,22 +22,22 @@ const KEY_WRAP_AAD: &[u8] = b"syc-key-wrap-v1";
 /// Wrapped key format: nonce (24) + encrypted_key (32) + auth_tag (16)
 pub(super) const WRAPPED_KEY_SIZE: usize = 72;
 
-/// Derives a wrapping key from PQXDH shared material and wraps the file key.
+/// Derives a wrapping key from X3DH shared material and wraps the file key.
 ///
 /// # Process
-/// 1. Derive wrapping key: HKDF-SHA256(PQXDH_material, salt, info)
+/// 1. Derive wrapping key: HKDF-SHA256(X3DH_material, salt, info)
 /// 2. Generate random 24-byte nonce
 /// 3. Encrypt file key with XChaCha20-Poly1305
 ///
 /// # Returns
 /// nonce (24 bytes) || wrapped_key (32 bytes plaintext + 16 bytes auth tag) = 72 bytes total
-pub(super) fn wrap_file_key<R: CryptoRng + Rng>(
-    pqxdh_material: &[u8],
+pub(super) fn wrap_file_key<R: CryptoRng + RngCore>(
+    x3dh_material: &[u8],
     file_key: &[u8; 32],
     rng: &mut R,
 ) -> Result<Vec<u8>> {
-    // Derive wrapping key from PQXDH material using HKDF
-    let hkdf = Hkdf::<Sha256>::new(Some(FILE_HKDF_SALT), pqxdh_material);
+    // Derive wrapping key from X3DH material using HKDF
+    let hkdf = Hkdf::<Sha256>::new(Some(FILE_HKDF_SALT), x3dh_material);
     let mut wrapping_key = Zeroizing::new([0u8; 32]);
     hkdf.expand(KEY_WRAP_INFO, wrapping_key.as_mut())
         .map_err(|_| KeyError::HkdfError)?;
@@ -64,7 +64,7 @@ pub(super) fn wrap_file_key<R: CryptoRng + Rng>(
     Ok(result) // WRAPPED_KEY_SIZE bytes
 }
 
-/// Unwraps file encryption key using PQXDH shared material.
+/// Unwraps file encryption key using X3DH shared material.
 ///
 /// # Process
 /// 1. Validate input is exactly 72 bytes
@@ -79,7 +79,7 @@ pub(super) fn wrap_file_key<R: CryptoRng + Rng>(
 /// - `KeyError::InvalidFormat` if input length != 72 bytes
 /// - `KeyError::InvalidSignature` if authentication fails (wrong key or tampered data)
 pub(super) fn unwrap_file_key(
-    pqxdh_material: &[u8],
+    x3dh_material: &[u8],
     wrapped_data: &[u8],
 ) -> Result<Zeroizing<[u8; 32]>> {
     if wrapped_data.len() != WRAPPED_KEY_SIZE {
@@ -91,8 +91,8 @@ pub(super) fn unwrap_file_key(
     let mut nonce = Zeroizing::new([0u8; 24]);
     nonce.copy_from_slice(nonce_bytes);
 
-    // Derive wrapping key from PQXDH material
-    let hkdf = Hkdf::<Sha256>::new(Some(FILE_HKDF_SALT), pqxdh_material);
+    // Derive wrapping key from X3DH material
+    let hkdf = Hkdf::<Sha256>::new(Some(FILE_HKDF_SALT), x3dh_material);
     let mut wrapping_key = Zeroizing::new([0u8; 32]);
     hkdf.expand(KEY_WRAP_INFO, wrapping_key.as_mut())
         .map_err(|_| KeyError::HkdfError)?;

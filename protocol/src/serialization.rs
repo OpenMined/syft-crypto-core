@@ -6,29 +6,30 @@
 //!
 //! # DID Document Format
 //! Public keys are serialized according to W3C DID specification with JWK encoding:
-//! - Identity key in `verificationMethod` (Ed25519)
-//! - Encryption keys in `keyAgreement` (X25519, Kyber1024)
+//! - Identity signing key in `verificationMethod` (Ed25519)
+//! - Encryption keys in `keyAgreement` (X25519 identity DH + signed prekey)
 //! - Base64url encoding (RFC 7515, no padding)
 //!
 //! # JWKS Format
 //! Private keys are stored in a flat JSON structure:
 //! - `identity_key`: Ed25519 keypair
-//! - `signed_prekey`: X25519 keypair with signature
-//! - `pq_prekey`: Kyber1024 keypair with signature
+//! - `identity_dh`: X25519 identity DH keypair
+//! - `signed_prekey`: X25519 signed prekey keypair
 
 use crate::error::{SerializationError, SerializationResult};
 use crate::keys::{SyftPrivateKeys, SyftPublicKeyBundle};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use libsignal_protocol::{IdentityKey, IdentityKeyPair, KeyPair, PublicKey, kem};
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde_json::{Value, json};
+use x25519_dalek::PublicKey as X25519PublicKey;
 use zeroize::{Zeroize, Zeroizing};
 
 /// Serialize public key bundle to W3C DID document format.
 ///
 /// Creates a DID document with:
 /// - `@context`: W3C DID and security suite contexts
-/// - `verificationMethod`: Identity key (Ed25519) for signing
-/// - `keyAgreement`: Encryption keys (X25519, Kyber1024)
+/// - `verificationMethod`: Identity signing key (Ed25519)
+/// - `keyAgreement`: Identity DH key + signed prekey (X25519)
 ///
 /// # Arguments
 /// * `bundle` - Public key bundle to serialize
@@ -64,12 +65,25 @@ pub fn serialize_to_did_document(
             "publicKeyJwk": {
                 "kty": "OKP",
                 "crv": "Ed25519",
-                "x": URL_SAFE_NO_PAD.encode(bundle.signal_identity_public_key.serialize()),
+                "x": URL_SAFE_NO_PAD.encode(bundle.identity_signing_public_key.as_bytes()),
                 "kid": "identity-key",
                 "use": "sig"
             }
         }],
         "keyAgreement": [
+            {
+                "id": format!("{}#identity-dh", did_id),
+                "type": "X25519KeyAgreementKey2020",
+                "controller": controller,
+                "publicKeyJwk": {
+                    "kty": "OKP",
+                    "crv": "X25519",
+                    "x": URL_SAFE_NO_PAD.encode(bundle.identity_dh_public_key.as_bytes()),
+                    "kid": "identity-dh",
+                    "use": "enc",
+                    "signature": URL_SAFE_NO_PAD.encode(&bundle.identity_dh_signature)
+                }
+            },
             {
                 "id": format!("{}#signed-prekey", did_id),
                 "type": "X25519KeyAgreementKey2020",
@@ -77,23 +91,10 @@ pub fn serialize_to_did_document(
                 "publicKeyJwk": {
                     "kty": "OKP",
                     "crv": "X25519",
-                    "x": URL_SAFE_NO_PAD.encode(bundle.signal_signed_public_pre_key.serialize()),
+                    "x": URL_SAFE_NO_PAD.encode(bundle.signed_prekey_public_key.as_bytes()),
                     "kid": "signed-prekey",
                     "use": "enc",
-                    "signature": URL_SAFE_NO_PAD.encode(&bundle.signal_signed_pre_key_signature)
-                }
-            },
-            {
-                "id": format!("{}#pq-prekey", did_id),
-                "type": "JsonWebKey2020",  //
-                "controller": controller,
-                "publicKeyJwk": {
-                    "kty": "PQ",
-                    "crv": "Kyber1024",
-                    "x": URL_SAFE_NO_PAD.encode(bundle.signal_pq_public_pre_key.serialize()),
-                    "kid": "pq-prekey",
-                    "use": "enc",
-                    "signature": URL_SAFE_NO_PAD.encode(&bundle.signal_pq_pre_key_signature)
+                    "signature": URL_SAFE_NO_PAD.encode(&bundle.signed_prekey_signature)
                 }
             }
         ]
@@ -103,9 +104,9 @@ pub fn serialize_to_did_document(
 /// Deserialize public key bundle from DID document.
 ///
 /// Parses a W3C DID document and extracts:
-/// - Identity key from `verificationMethod`
-/// - Signed prekey from `keyAgreement` (X25519)
-/// - PQ prekey from `keyAgreement` (Kyber1024)
+/// - Identity signing key from `verificationMethod`
+/// - Identity DH key from `keyAgreement`
+/// - Signed prekey from `keyAgreement`
 ///
 /// # Arguments
 /// * `json` - DID document as JSON value
@@ -121,6 +122,16 @@ pub fn deserialize_from_did_document(json: &Value) -> SerializationResult<SyftPu
             .map_err(|e| SerializationError::InvalidBase64(e.to_string()))
     }
 
+    fn decode_fixed<const N: usize>(s: &str) -> SerializationResult<[u8; N]> {
+        let bytes = decode_base64url(s)?;
+        if bytes.len() != N {
+            return Err(SerializationError::InvalidFormat);
+        }
+        let mut out = [0u8; N];
+        out.copy_from_slice(&bytes);
+        Ok(out)
+    }
+
     // Extract identity key from verificationMethod
     let verification_methods = json["verificationMethod"]
         .as_array()
@@ -131,26 +142,43 @@ pub fn deserialize_from_did_document(json: &Value) -> SerializationResult<SyftPu
         .find(|m| m["type"] == "Ed25519VerificationKey2020")
         .ok_or(SerializationError::MissingIdentityKey)?;
 
-    let identity_key_bytes = decode_base64url(
+    let identity_key_bytes = decode_fixed::<32>(
         identity_method["publicKeyJwk"]["x"]
             .as_str()
             .ok_or(SerializationError::InvalidFormat)?,
     )?;
-    let identity_key =
-        IdentityKey::decode(&identity_key_bytes).map_err(|_| SerializationError::InvalidFormat)?;
+    let identity_key = VerifyingKey::from_bytes(&identity_key_bytes)
+        .map_err(|_| SerializationError::InvalidFormat)?;
 
     // Extract encryption keys from keyAgreement
     let key_agreement = json["keyAgreement"]
         .as_array()
         .ok_or(SerializationError::InvalidFormat)?;
 
-    // Find X25519 signed prekey
+    let identity_dh_method = key_agreement
+        .iter()
+        .find(|m| m["publicKeyJwk"]["kid"] == "identity-dh")
+        .ok_or(SerializationError::MissingIdentityDhKey)?;
+
+    let identity_dh_bytes = decode_fixed::<32>(
+        identity_dh_method["publicKeyJwk"]["x"]
+            .as_str()
+            .ok_or(SerializationError::InvalidFormat)?,
+    )?;
+    let identity_dh_signature = decode_base64url(
+        identity_dh_method["publicKeyJwk"]["signature"]
+            .as_str()
+            .ok_or(SerializationError::InvalidFormat)?,
+    )?
+    .into_boxed_slice();
+    let identity_dh_key = X25519PublicKey::from(identity_dh_bytes);
+
     let spk_method = key_agreement
         .iter()
-        .find(|m| m["type"] == "X25519KeyAgreementKey2020")
+        .find(|m| m["publicKeyJwk"]["kid"] == "signed-prekey")
         .ok_or(SerializationError::MissingSignedPrekey)?;
 
-    let spk_bytes = decode_base64url(
+    let spk_bytes = decode_fixed::<32>(
         spk_method["publicKeyJwk"]["x"]
             .as_str()
             .ok_or(SerializationError::InvalidFormat)?,
@@ -162,37 +190,15 @@ pub fn deserialize_from_did_document(json: &Value) -> SerializationResult<SyftPu
     )?
     .into_boxed_slice();
 
-    let signed_pre_key =
-        PublicKey::deserialize(&spk_bytes).map_err(|_| SerializationError::InvalidFormat)?;
-
-    // Find Kyber1024 PQ prekey (JsonWebKey2020 with kty="PQ")
-    let pqspk_method = key_agreement
-        .iter()
-        .find(|m| m["type"] == "JsonWebKey2020" && m["publicKeyJwk"]["kty"] == "PQ")
-        .ok_or(SerializationError::MissingPQPrekey)?;
-
-    let pqspk_bytes = decode_base64url(
-        pqspk_method["publicKeyJwk"]["x"]
-            .as_str()
-            .ok_or(SerializationError::InvalidFormat)?,
-    )?;
-    let pqspk_signature = decode_base64url(
-        pqspk_method["publicKeyJwk"]["signature"]
-            .as_str()
-            .ok_or(SerializationError::InvalidFormat)?,
-    )?
-    .into_boxed_slice();
-
-    let pq_pre_key =
-        kem::PublicKey::deserialize(&pqspk_bytes).map_err(|_| SerializationError::InvalidFormat)?;
+    let signed_pre_key = X25519PublicKey::from(spk_bytes);
 
     // Create PublicKeyBundle
     let bundle = SyftPublicKeyBundle {
-        signal_identity_public_key: identity_key,
-        signal_signed_public_pre_key: signed_pre_key,
-        signal_signed_pre_key_signature: spk_signature,
-        signal_pq_public_pre_key: pq_pre_key,
-        signal_pq_pre_key_signature: pqspk_signature,
+        identity_signing_public_key: identity_key,
+        identity_dh_public_key: identity_dh_key,
+        identity_dh_signature,
+        signed_prekey_public_key: signed_pre_key,
+        signed_prekey_signature: spk_signature,
     };
 
     // Verify signatures
@@ -207,8 +213,8 @@ pub fn deserialize_from_did_document(json: &Value) -> SerializationResult<SyftPu
 ///
 /// Creates a flat JSON structure with three keys:
 /// - `identity_key`: Ed25519 keypair (public + private)
-/// - `signed_prekey`: X25519 keypair with signature
-/// - `pq_prekey`: Kyber1024 keypair with signature
+/// - `identity_dh`: X25519 keypair
+/// - `signed_prekey`: X25519 keypair
 ///
 /// All keys use base64url encoding (RFC 7515, no padding).
 ///
@@ -222,29 +228,32 @@ pub fn deserialize_from_did_document(json: &Value) -> SerializationResult<SyftPu
 /// let jwks = serialize_private_keys(&private_keys).unwrap();
 /// ```
 pub fn serialize_private_keys(keys: &SyftPrivateKeys) -> SerializationResult<Value> {
+    let identity_dh_public = X25519PublicKey::from(keys.identity_dh());
+    let signed_pre_key_public = X25519PublicKey::from(keys.signed_pre_key());
+
     Ok(json!({
         "identity_key": {
             "kty": "OKP",
             "crv": "Ed25519",
-            "x": URL_SAFE_NO_PAD.encode(keys.identity().identity_key().serialize()),
-            "d": URL_SAFE_NO_PAD.encode(keys.identity().serialize()),
+            "x": URL_SAFE_NO_PAD.encode(keys.identity().verifying_key().as_bytes()),
+            "d": URL_SAFE_NO_PAD.encode(keys.identity().to_bytes()),
             "kid": "identity-key",
             "use": "sig"
+        },
+        "identity_dh": {
+            "kty": "OKP",
+            "crv": "X25519",
+            "x": URL_SAFE_NO_PAD.encode(identity_dh_public.as_bytes()),
+            "d": URL_SAFE_NO_PAD.encode(keys.identity_dh().to_bytes()),
+            "kid": "identity-dh",
+            "use": "enc"
         },
         "signed_prekey": {
             "kty": "OKP",
             "crv": "X25519",
-            "x": URL_SAFE_NO_PAD.encode(keys.signed_pre_key().public_key.serialize()),
-            "d": URL_SAFE_NO_PAD.encode(keys.signed_pre_key().private_key.serialize()),
+            "x": URL_SAFE_NO_PAD.encode(signed_pre_key_public.as_bytes()),
+            "d": URL_SAFE_NO_PAD.encode(keys.signed_pre_key().to_bytes()),
             "kid": "signed-prekey",
-            "use": "enc"
-        },
-        "pq_prekey": {
-            "kty": "PQ",
-            "crv": "Kyber1024",
-            "x": URL_SAFE_NO_PAD.encode(keys.pq_signed_pre_key().public_key.serialize()),
-            "d": URL_SAFE_NO_PAD.encode(keys.pq_signed_pre_key().secret_key.serialize()),
-            "kid": "pq-prekey",
             "use": "enc"
         }
     }))
@@ -254,8 +263,8 @@ pub fn serialize_private_keys(keys: &SyftPrivateKeys) -> SerializationResult<Val
 ///
 /// Parses a JWKS JSON structure and reconstructs:
 /// - Identity keypair (Ed25519)
+/// - Identity DH keypair (X25519)
 /// - Signed prekey pair (X25519)
-/// - PQ prekey pair (Kyber1024)
 ///
 /// # Arguments
 /// * `json` - JWKS document as JSON value
@@ -271,68 +280,88 @@ pub fn deserialize_private_keys(json: &Value) -> SerializationResult<SyftPrivate
             .map_err(|e| SerializationError::InvalidBase64(e.to_string()))
     }
 
+    fn decode_fixed<const N: usize>(s: &str) -> SerializationResult<[u8; N]> {
+        let bytes = decode_base64url(s)?;
+        if bytes.len() != N {
+            return Err(SerializationError::InvalidFormat);
+        }
+        let mut out = [0u8; N];
+        out.copy_from_slice(&bytes);
+        Ok(out)
+    }
+
     // Extract identity key
     let identity_obj = json
         .get("identity_key")
         .ok_or(SerializationError::MissingIdentityKey)?;
 
-    let identity_private_bytes = Zeroizing::new(decode_base64url(
+    let identity_private_bytes = Zeroizing::new(decode_fixed::<32>(
         identity_obj["d"]
             .as_str()
             .ok_or(SerializationError::InvalidFormat)?,
     )?);
 
-    let identity_keypair = IdentityKeyPair::try_from(&identity_private_bytes[..])
-        .map_err(|_| SerializationError::InvalidFormat)?;
+    let identity_public_bytes = decode_fixed::<32>(
+        identity_obj["x"]
+            .as_str()
+            .ok_or(SerializationError::InvalidFormat)?,
+    )?;
+
+    let identity_signing_key = SigningKey::from_bytes(&identity_private_bytes);
+    if identity_signing_key.verifying_key().as_bytes() != &identity_public_bytes {
+        return Err(SerializationError::InvalidSignature);
+    }
+
+    // Extract identity DH key
+    let identity_dh_obj = json
+        .get("identity_dh")
+        .ok_or(SerializationError::MissingIdentityDhKey)?;
+
+    let identity_dh_private_bytes = Zeroizing::new(decode_fixed::<32>(
+        identity_dh_obj["d"]
+            .as_str()
+            .ok_or(SerializationError::InvalidFormat)?,
+    )?);
+
+    let identity_dh_public_bytes = decode_fixed::<32>(
+        identity_dh_obj["x"]
+            .as_str()
+            .ok_or(SerializationError::InvalidFormat)?,
+    )?;
+
+    let identity_dh_key = x25519_dalek::StaticSecret::from(*identity_dh_private_bytes);
+    let identity_dh_public = X25519PublicKey::from(&identity_dh_key);
+    if identity_dh_public.as_bytes() != &identity_dh_public_bytes {
+        return Err(SerializationError::InvalidSignature);
+    }
 
     // Extract signed prekey
     let spk_obj = json
         .get("signed_prekey")
         .ok_or(SerializationError::MissingSignedPrekey)?;
 
-    let spk_private_bytes = Zeroizing::new(decode_base64url(
+    let spk_private_bytes = Zeroizing::new(decode_fixed::<32>(
         spk_obj["d"]
             .as_str()
             .ok_or(SerializationError::InvalidFormat)?,
     )?);
 
-    // Need to get public key bytes from JSON as well
-    let spk_public_bytes = decode_base64url(
+    let spk_public_bytes = decode_fixed::<32>(
         spk_obj["x"]
             .as_str()
             .ok_or(SerializationError::InvalidFormat)?,
     )?;
 
-    let spk_keypair = KeyPair::from_public_and_private(&spk_public_bytes, &spk_private_bytes)
-        .map_err(|_| SerializationError::InvalidFormat)?;
+    let signed_pre_key = x25519_dalek::StaticSecret::from(*spk_private_bytes);
+    let signed_pre_key_public = X25519PublicKey::from(&signed_pre_key);
+    if signed_pre_key_public.as_bytes() != &spk_public_bytes {
+        return Err(SerializationError::InvalidSignature);
+    }
 
-    // Extract PQ prekey
-    let pqspk_obj = json
-        .get("pq_prekey")
-        .ok_or(SerializationError::MissingPQPrekey)?;
-
-    let pqspk_secret_bytes = Zeroizing::new(decode_base64url(
-        pqspk_obj["d"]
-            .as_str()
-            .ok_or(SerializationError::InvalidFormat)?,
-    )?);
-
-    // Need to get public key bytes from JSON as well
-    let pqspk_public_bytes = decode_base64url(
-        pqspk_obj["x"]
-            .as_str()
-            .ok_or(SerializationError::InvalidFormat)?,
-    )?;
-
-    let pqspk_keypair =
-        kem::KeyPair::from_public_and_private(&pqspk_public_bytes, &pqspk_secret_bytes)
-            .map_err(|_| SerializationError::InvalidFormat)?;
-
-    // Reconstruct SyftPrivateKeys
     Ok(SyftPrivateKeys::new(
-        identity_keypair,
-        spk_keypair,
-        pqspk_keypair,
+        identity_signing_key,
+        identity_dh_key,
+        signed_pre_key,
     ))
 }
 

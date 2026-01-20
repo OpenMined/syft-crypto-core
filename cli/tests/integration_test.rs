@@ -12,10 +12,9 @@ const CONFIG_JSON: &str = r#"{
 
 const SAMPLE_MESSAGE: &str = r#"Hello Bob,
 
-This is a placeholder message from Alice. Once the PQ encryption
-plumbing is wired up, this text will be replaced with sealed bytes."#;
+This is a sample message from Alice. It will be encrypted for recipients."#;
 
-const SYC_MAGIC: &[u8; 4] = b"SYC1";
+const SYC_MAGIC: &[u8; 4] = b"SYC2";
 
 #[test]
 fn simulate_workflow_matches_shell_script() -> Result<(), Box<dyn std::error::Error>> {

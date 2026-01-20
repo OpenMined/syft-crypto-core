@@ -26,12 +26,6 @@ BINDINGS="$ROOT_DIR/bindings/python"
 PY_SRC="$BINDINGS/python"
 YELLOW='\033[0;33m'
 
-# Check if submodules are initialized
-if [[ ! -d "$ROOT_DIR/vendor/libsignal-protocol-syft/crates" ]]; then
-  echo -e "${YELLOW}⊘ skipped (submodules not initialized)${NC}"
-  exit 0
-fi
-
 # Setup venv (must be sequential)
 uv venv --quiet 2>/dev/null || true
 source .venv/bin/activate
