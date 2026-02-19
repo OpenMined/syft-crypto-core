@@ -1,6 +1,6 @@
 [package]
 name = "syft-crypto-protocol"
-description = "Cryptographic protocol implementation for SyftBox using X3DH-style key agreement"
+description = "Cryptographic protocol implementation for SyftBox using X3DH key agreement"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

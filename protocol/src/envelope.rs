@@ -224,7 +224,7 @@ fn parse_signature_section(bytes: &[u8], cursor: usize) -> Result<(Vec<u8>, usiz
 /// ├─────────────────────────────────────────────────────────────┤
 /// │ Ciphertext (remainder of file)                              │
 /// │ - Encrypted with XChaCha20-Poly1305                        │
-/// │ - Key wrapped using X3DH-style X25519                      │
+/// │ - Key wrapped using X3DH X25519                      │
 /// └─────────────────────────────────────────────────────────────┘
 /// ```
 ///

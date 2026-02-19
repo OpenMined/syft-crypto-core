@@ -1,4 +1,4 @@
-//! Multi-recipient file encryption using X3DH-style key agreement and XChaCha20-Poly1305.
+//! Multi-recipient file encryption using X3DH key agreement and XChaCha20-Poly1305.
 //!
 //! This module provides end-to-end encrypted file sharing with:
 //! - **X3DH key agreement**: X25519-based key agreement with fresh ephemerals

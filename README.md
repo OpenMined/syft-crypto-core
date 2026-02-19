@@ -1,6 +1,6 @@
 # syft-crypto-core
 
-End-to-end encrypted communication and file synchronization for SyftBox using X3DH-style key agreement.
+End-to-end encrypted communication and file synchronization for SyftBox using X3DH key agreement.
 
 ## Overview
 

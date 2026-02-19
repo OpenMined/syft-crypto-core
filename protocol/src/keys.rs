@@ -1,4 +1,4 @@
-//! Key structures for SyftBox X3DH-style protocol.
+//! Key structures for SyftBox X3DH protocol.
 //!
 //! This module defines the key types used in the SyftBox protocol:
 //! - SyftRecoveryKey: 32-byte master secret for deterministic key derivation
@@ -249,7 +249,7 @@ impl SyftRecoveryKey {
     }
 }
 
-/// Container for all private key material needed for X3DH-style key agreement.
+/// Container for all private key material needed for X3DH key agreement.
 ///
 /// Bundles identity signing key (Ed25519), identity DH key (X25519), and signed prekey (X25519).
 pub struct SyftPrivateKeys {

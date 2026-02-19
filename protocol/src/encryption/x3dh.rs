@@ -1,4 +1,4 @@
-//! X3DH-style key agreement protocol.
+//! X3DH key agreement protocol.
 
 use crate::envelope::WrappingInfo;
 use crate::keys::{SyftPrivateKeys, SyftPublicKeyBundle};
@@ -39,16 +39,15 @@ impl<'a, R: RngCore + CryptoRng> RandCoreRngCore for RandCoreAdapter<'a, R> {
 
 impl<'a, R: RngCore + CryptoRng> RandCoreCryptoRng for RandCoreAdapter<'a, R> {}
 
-/// Performs sender-side X3DH-style key agreement.
+/// Performs sender-side X3DH key agreement.
 ///
 /// Establishes shared secret material by combining X25519 DH operations. The sender (Alice)
 /// computes:
 ///
 /// - DH1 = DH(IK_A_priv, SPK_B_pub)
-/// - DH2 = DH(SPK_A_priv, IK_B_pub)
-/// - DH3 = DH(EK_A_priv, IK_B_pub)  [fresh ephemeral key for forward secrecy]
-/// - DH4 = DH(EK_A_priv, SPK_B_pub)
-/// - X3DH_material = DH1 || DH2 || DH3 || DH4
+/// - DH2 = DH(EK_A_priv, IK_B_pub)  [fresh ephemeral key for forward secrecy]
+/// - DH3 = DH(EK_A_priv, SPK_B_pub)
+/// - X3DH_material = DH1 || DH2 || DH3
 ///
 /// Where:
 /// - IK = Identity DH Key, SPK = Signed PreKey, EK = Ephemeral Key
@@ -82,8 +81,7 @@ pub(super) fn derive_sender_shared_material<R: CryptoRng + RngCore>(
         return Err(KeyError::InvalidSharedSecret);
     }
     let dh2 = Zeroizing::new(
-        sender_keys
-            .signed_pre_key()
+        ephemeral
             .diffie_hellman(&recipient_bundle.identity_dh_public_key)
             .to_bytes(),
     );
@@ -92,28 +90,17 @@ pub(super) fn derive_sender_shared_material<R: CryptoRng + RngCore>(
     }
     let dh3 = Zeroizing::new(
         ephemeral
-            .diffie_hellman(&recipient_bundle.identity_dh_public_key)
+            .diffie_hellman(&recipient_bundle.signed_prekey_public_key)
             .to_bytes(),
     );
     if is_all_zero(dh3.as_ref()) {
         return Err(KeyError::InvalidSharedSecret);
     }
-    let dh4 = Zeroizing::new(
-        ephemeral
-            .diffie_hellman(&recipient_bundle.signed_prekey_public_key)
-            .to_bytes(),
-    );
-    if is_all_zero(dh4.as_ref()) {
-        return Err(KeyError::InvalidSharedSecret);
-    }
 
-    let mut material = Zeroizing::new(Vec::with_capacity(
-        dh1.len() + dh2.len() + dh3.len() + dh4.len(),
-    ));
+    let mut material = Zeroizing::new(Vec::with_capacity(dh1.len() + dh2.len() + dh3.len()));
     material.extend_from_slice(dh1.as_ref());
     material.extend_from_slice(dh2.as_ref());
     material.extend_from_slice(dh3.as_ref());
-    material.extend_from_slice(dh4.as_ref());
 
     let wrapping = WrappingInfo {
         recipient_identity: Some(recipient_identity.to_owned()),
@@ -125,16 +112,15 @@ pub(super) fn derive_sender_shared_material<R: CryptoRng + RngCore>(
     Ok((material, wrapping))
 }
 
-/// Performs recipient-side X3DH-style key agreement.
+/// Performs recipient-side X3DH key agreement.
 ///
 /// Derives the same shared secret material as the sender by performing the same DH operations
 /// from the recipient's perspective. The recipient (Bob) computes:
 ///
 /// - DH1 = DH(SPK_B_priv, IK_A_pub)
-/// - DH2 = DH(IK_B_priv, SPK_A_pub)
-/// - DH3 = DH(IK_B_priv, EK_A_pub)  [EK_A_pub received from sender]
-/// - DH4 = DH(SPK_B_priv, EK_A_pub)
-/// - X3DH_material = DH1 || DH2 || DH3 || DH4
+/// - DH2 = DH(IK_B_priv, EK_A_pub)  [EK_A_pub received from sender]
+/// - DH3 = DH(SPK_B_priv, EK_A_pub)
+/// - X3DH_material = DH1 || DH2 || DH3
 ///
 /// Where:
 /// - IK = Identity DH Key, SPK = Signed PreKey, EK = Ephemeral Key
@@ -174,7 +160,7 @@ pub(super) fn derive_recipient_shared_material(
     let dh2 = Zeroizing::new(
         recipient_keys
             .identity_dh()
-            .diffie_hellman(&sender_bundle.signed_prekey_public_key)
+            .diffie_hellman(&ephemeral_public)
             .to_bytes(),
     );
     if is_all_zero(dh2.as_ref()) {
@@ -182,29 +168,17 @@ pub(super) fn derive_recipient_shared_material(
     }
     let dh3 = Zeroizing::new(
         recipient_keys
-            .identity_dh()
+            .signed_pre_key()
             .diffie_hellman(&ephemeral_public)
             .to_bytes(),
     );
     if is_all_zero(dh3.as_ref()) {
         return Err(KeyError::InvalidSharedSecret);
     }
-    let dh4 = Zeroizing::new(
-        recipient_keys
-            .signed_pre_key()
-            .diffie_hellman(&ephemeral_public)
-            .to_bytes(),
-    );
-    if is_all_zero(dh4.as_ref()) {
-        return Err(KeyError::InvalidSharedSecret);
-    }
 
-    let mut material = Zeroizing::new(Vec::with_capacity(
-        dh1.len() + dh2.len() + dh3.len() + dh4.len(),
-    ));
+    let mut material = Zeroizing::new(Vec::with_capacity(dh1.len() + dh2.len() + dh3.len()));
     material.extend_from_slice(dh1.as_ref());
     material.extend_from_slice(dh2.as_ref());
     material.extend_from_slice(dh3.as_ref());
-    material.extend_from_slice(dh4.as_ref());
     Ok(material)
 }

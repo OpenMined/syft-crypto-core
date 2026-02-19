@@ -363,7 +363,7 @@ jobs:
           cat > "$NOTES_FILE" <<EOF
           # SyftBox Crypto Core v${VERSION}
 
-          Classical cryptographic protocol implementation using X3DH-style key agreement.
+          Classical cryptographic protocol implementation using X3DH key agreement.
 
           ## Published Artifacts
 

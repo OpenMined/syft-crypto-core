@@ -41,7 +41,7 @@ pub struct BytesReadOutput {
 
 /// Writes plaintext or encrypted bytes to a datasite path.
 ///
-/// When recipients are specified, encrypts data using X3DH-style multi-recipient encryption
+/// When recipients are specified, encrypts data using X3DH multi-recipient encryption
 /// where the payload is encrypted once and the key is wrapped separately for each recipient.
 /// All recipients can independently decrypt using their private keys.
 ///

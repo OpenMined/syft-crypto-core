@@ -40,10 +40,10 @@ fn test_x3dh_round_trip() {
         "X3DH materials must match"
     );
 
-    // Material should be 128 bytes (4×32 DH)
+    // Material should be 96 bytes (3×32 DH)
     assert!(
-        alice_material.len() == 128,
-        "Expected 128 bytes, got {}",
+        alice_material.len() == 96,
+        "Expected 96 bytes, got {}",
         alice_material.len()
     );
 }
