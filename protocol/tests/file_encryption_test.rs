@@ -749,14 +749,15 @@ fn test_wrapped_key_format() {
         .decode(&parsed.prelude.wrappings[0].wrap_ciphertext)
         .expect("decode wrap_ciphertext");
 
-    // Format: wrapped_key (72 bytes) || kyber_ct (~1568 bytes)
-    assert!(
-        wrap_ciphertext.len() >= 72,
-        "wrap_ciphertext should be at least 72 bytes (wrapped key) + Kyber CT"
+    // Format: wrapped_key (72 bytes)
+    assert_eq!(
+        wrap_ciphertext.len(),
+        72,
+        "wrap_ciphertext should be exactly 72 bytes"
     );
 
-    // The first 72 bytes should be: nonce (24) + encrypted_key (32) + auth_tag (16)
-    let wrapped_key = &wrap_ciphertext[..72];
+    // The 72 bytes should be: nonce (24) + encrypted_key (32) + auth_tag (16)
+    let wrapped_key = &wrap_ciphertext[..];
     assert_eq!(
         wrapped_key.len(),
         72,

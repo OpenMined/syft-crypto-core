@@ -19,7 +19,7 @@ rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 syft-crypto-protocol = { path = "../../protocol" }
-libsignal-protocol.workspace = true
+ed25519-dalek.workspace = true
 
 [package.metadata.maturin]
 name = "syft_crypto_python._native"

@@ -42,13 +42,13 @@ pub enum KeyError {
     #[error("Invalid key format")]
     InvalidFormat,
 
+    /// Invalid shared secret derived from DH
+    #[error("Invalid shared secret")]
+    InvalidSharedSecret,
+
     /// Key rotation error
     #[error("Key rotation failed: {0}")]
     RotationError(String),
-
-    /// libsignal protocol error
-    #[error("libsignal error: {0}")]
-    SignalError(#[from] libsignal_protocol::SignalProtocolError),
 
     /// JSON serialization error
     #[error("JSON error: {0}")]
@@ -151,9 +151,9 @@ pub enum SerializationError {
     #[error("Missing signed prekey in DID document")]
     MissingSignedPrekey,
 
-    /// Missing PQ prekey in DID document
-    #[error("Missing PQ prekey in DID document")]
-    MissingPQPrekey,
+    /// Missing identity DH key in DID document
+    #[error("Missing identity DH key in DID document")]
+    MissingIdentityDhKey,
 
     /// Invalid base64 encoding
     #[error("Invalid base64 encoding: {0}")]

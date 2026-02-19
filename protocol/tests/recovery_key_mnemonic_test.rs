@@ -32,8 +32,8 @@ fn test_mnemonic_roundtrip() {
     let recovered_keys = recovered_key.derive_keys().unwrap();
 
     assert_eq!(
-        original_keys.identity().serialize(),
-        recovered_keys.identity().serialize(),
+        original_keys.identity().to_bytes(),
+        recovered_keys.identity().to_bytes(),
         "Identity keys should match after mnemonic roundtrip"
     );
 }
@@ -138,12 +138,12 @@ fn test_mnemonic_case_insensitive() {
     let mixed_keys = recovered_mixed.derive_keys().unwrap();
 
     assert_eq!(
-        original_keys.identity().serialize(),
-        upper_keys.identity().serialize()
+        original_keys.identity().to_bytes(),
+        upper_keys.identity().to_bytes()
     );
     assert_eq!(
-        original_keys.identity().serialize(),
-        mixed_keys.identity().serialize()
+        original_keys.identity().to_bytes(),
+        mixed_keys.identity().to_bytes()
     );
 }
 
@@ -173,8 +173,8 @@ fn test_mnemonic_extra_whitespace() {
     assert_eq!(recovery_key, recovered, "Recovery keys should match");
 
     assert_eq!(
-        original_keys.identity().serialize(),
-        recovered_keys.identity().serialize(),
+        original_keys.identity().to_bytes(),
+        recovered_keys.identity().to_bytes(),
         "Should handle extra whitespace correctly"
     );
 }
@@ -201,21 +201,19 @@ fn test_mnemonic_derives_same_keys_as_original() {
 
     // Verify all keys match
     assert_eq!(
-        original_bundle.signal_identity_public_key.serialize(),
-        recovered_bundle.signal_identity_public_key.serialize(),
+        original_bundle.identity_signing_public_key.as_bytes(),
+        recovered_bundle.identity_signing_public_key.as_bytes(),
         "Identity public keys should match"
     );
-
     assert_eq!(
-        original_keys.signed_pre_key().public_key.serialize(),
-        recovered_keys.signed_pre_key().public_key.serialize(),
-        "Signed prekeys should match"
+        original_bundle.identity_dh_public_key.as_bytes(),
+        recovered_bundle.identity_dh_public_key.as_bytes(),
+        "Identity DH keys should match"
     );
-
     assert_eq!(
-        original_keys.pq_signed_pre_key().public_key.serialize(),
-        recovered_keys.pq_signed_pre_key().public_key.serialize(),
-        "PQ prekeys should match"
+        original_keys.signed_pre_key().to_bytes(),
+        recovered_keys.signed_pre_key().to_bytes(),
+        "Signed prekeys should match"
     );
 }
 
@@ -244,8 +242,8 @@ fn test_mnemonic_format_and_parsing() {
     let parsed_keys = parsed_key.derive_keys().unwrap();
 
     assert_eq!(
-        original_keys.identity().serialize(),
-        parsed_keys.identity().serialize(),
+        original_keys.identity().to_bytes(),
+        parsed_keys.identity().to_bytes(),
         "Parsed mnemonic should produce same keys"
     );
 }

@@ -14,7 +14,7 @@ use syft_crypto_protocol::datasite::crypto::parse_public_bundle;
 /// Identity and key-management subcommands.
 #[derive(Subcommand, Debug)]
 pub(crate) enum KeyCommand {
-    /// Generate a new identity, signed pre-key, and PQ pre-key set
+    /// Generate a new identity and signed pre-key set
     Generate(KeyGenerateArgs),
 
     /// Import an existing bundle into the local vault after verifying signatures
@@ -184,7 +184,7 @@ fn handle_key_generate(context: &AppContext, args: KeyGenerateArgs) -> Result<()
     if args.dry_run {
         plan.info("dry-run: no files will be written");
     }
-    plan.info("derive recovery key + PQXDH material via syft-crypto-protocol")
+    plan.info("derive recovery key + X3DH material via syft-crypto-protocol")
         .info("persist private JWKS into the vault and emit DID bundle artifacts");
 
     if args.dry_run {
@@ -256,7 +256,7 @@ fn handle_key_import(context: &AppContext, args: KeyImportArgs) -> Result<()> {
     }
     plan.bool("verification only", args.verify_only)
         .bool("force overwrite", args.force)
-        .info("verify libsignal signatures + identity metadata");
+        .info("verify bundle signatures + identity metadata");
 
     let bundle_body = fs::read_to_string(&bundle_path)?;
     let bundle_info = parse_public_bundle(&bundle_body)?;

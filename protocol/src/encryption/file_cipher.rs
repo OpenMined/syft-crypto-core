@@ -14,7 +14,7 @@ pub const FILE_CIPHER_SUITE: &str = "xchacha20poly1305-v1";
 
 /// Encrypts plaintext with XChaCha20-Poly1305.
 ///
-/// Uses Signal's recommended attachment cipher with 192-bit nonces (XChaCha20)
+/// Uses the recommended attachment cipher with 192-bit nonces (XChaCha20)
 /// and Poly1305 authentication tags.
 ///
 /// # Arguments
@@ -29,9 +29,8 @@ pub(super) fn encrypt_payload(
     nonce: &[u8; 24],
     plaintext: &[u8],
 ) -> Result<Vec<u8>> {
-    // libsignal's Rust bindings currently expose PQXDH/session layers but do not provide
-    // an attachment/file cipher helper. Until that API exists upstream we locally reuse the
-    // XChaCha20-Poly1305 construction Signal uses elsewhere so callers can seal bytes today.
+    // We locally reuse the XChaCha20-Poly1305 construction used for attachments so
+    // callers can seal bytes without additional dependencies.
     let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
     cipher
         .encrypt(

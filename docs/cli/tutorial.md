@@ -65,8 +65,7 @@ If you ran `just init-sandbox`, these files already exist.
 cat > sandbox/alice/unencrypted/alice@example.org/shared/bob@example.org/files/message.txt <<'TEXT'
 Hello Bob,
 
-This is a placeholder message from Alice. Once the PQ encryption
-plumbing is wired up, this text will be replaced with sealed bytes.
+This is a sample message from Alice. It will be encrypted for recipients.
 TEXT
 ```
 
@@ -163,7 +162,7 @@ syc \
   --verbose
 ```
 
-You should see the `SYC1` magic, the sender (`alice@example.org`), the recipient list, and cipher statistics without the tool touching the payload bytes.
+You should see the `SYC2` magic, the sender (`alice@example.org`), the recipient list, and cipher statistics without the tool touching the payload bytes.
 
 ## 8. Decrypt into Bob’s Shadow Tree
 

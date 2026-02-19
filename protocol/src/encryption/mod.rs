@@ -1,18 +1,18 @@
-//! Multi-recipient file encryption using PQXDH and XChaCha20-Poly1305.
+//! Multi-recipient file encryption using X3DH key agreement and XChaCha20-Poly1305.
 //!
 //! This module provides end-to-end encrypted file sharing with:
-//! - **PQXDH key agreement**: Hybrid classical (X25519) + post-quantum (Kyber1024) security
+//! - **X3DH key agreement**: X25519-based key agreement with fresh ephemerals
 //! - **Multi-recipient support**: Encrypt once, wrap the key N times for N recipients
-//! - **XChaCha20-Poly1305 AEAD**: Signal's recommended attachment cipher
+//! - **XChaCha20-Poly1305 AEAD**: recommended attachment cipher
 //! - **Forward secrecy**: Fresh ephemeral keys for each encryption
 
 mod constant_time;
 mod file_cipher;
 mod key_wrap;
-mod pqxdh;
+mod x3dh;
 
 use crate::envelope::{
-    EnvelopePayload, ParsedEnvelope, WrappingInfo, build_envelope_with_wrappings, verify_signature,
+    EnvelopePayload, ParsedEnvelope, build_envelope_with_wrappings, verify_signature,
 };
 use crate::keys::{SyftPrivateKeys, SyftPublicKeyBundle};
 use crate::{Result, error::KeyError};
@@ -21,7 +21,7 @@ use chacha20poly1305::{
     Key, KeyInit, XChaCha20Poly1305, XNonce,
     aead::{Aead, Payload},
 };
-use rand::{CryptoRng, Rng};
+use rand::{CryptoRng, RngCore};
 use subtle::{Choice, ConstantTimeEq};
 use zeroize::Zeroizing;
 
@@ -32,7 +32,7 @@ pub use file_cipher::FILE_CIPHER_SUITE;
 use constant_time::ct_identity_match;
 use file_cipher::encrypt_payload;
 use key_wrap::{WRAPPED_KEY_SIZE, unwrap_file_key, wrap_file_key};
-use pqxdh::{derive_recipient_shared_material, derive_sender_shared_material};
+use x3dh::{derive_recipient_shared_material, derive_sender_shared_material};
 
 /// Additional authenticated data for file decryption
 const FILE_AAD: &[u8] = b"syc-file-v1";
@@ -46,8 +46,8 @@ pub struct EncryptionRecipient<'a> {
 /// Encrypt plaintext bytes for the provided recipients, returning a fully formed SYC envelope.
 ///
 /// Supports multiple recipients - the file is encrypted once with a random key, then that key
-/// is wrapped separately for each recipient using PQXDH.
-pub fn encrypt_message<R: CryptoRng + Rng>(
+/// is wrapped separately for each recipient using X3DH-derived material.
+pub fn encrypt_message<R: CryptoRng + RngCore>(
     sender_identity: &str,
     sender_keys: &SyftPrivateKeys,
     recipients: &[EncryptionRecipient<'_>],
@@ -79,23 +79,14 @@ pub fn encrypt_message<R: CryptoRng + Rng>(
     let mut wrappings = Vec::with_capacity(recipients.len());
 
     for recipient in recipients {
-        let (pqxdh_material, mut wrapping_info) =
+        let (x3dh_material, mut wrapping_info) =
             derive_sender_shared_material(sender_keys, recipient.identity, recipient.bundle, rng)?;
 
-        // Wrap the file key using PQXDH material
-        let wrapped_key = wrap_file_key(pqxdh_material.as_ref(), &file_key, rng)?;
+        // Wrap the file key using X3DH material
+        let wrapped_key = wrap_file_key(x3dh_material.as_ref(), &file_key, rng)?;
 
-        // Decode the existing kyber ciphertext from the wrapping
-        let kyber_ct = URL_SAFE_NO_PAD
-            .decode(&wrapping_info.wrap_ciphertext)
-            .map_err(|_| KeyError::InvalidFormat)?;
-
-        // Combine: wrapped_key (72 bytes) || kyber_ct (~1568 bytes)
-        let mut combined = wrapped_key;
-        combined.extend_from_slice(&kyber_ct);
-
-        // Update wrapping with combined data
-        wrapping_info.wrap_ciphertext = URL_SAFE_NO_PAD.encode(&combined);
+        // Store wrapped key bytes as the wrapping ciphertext
+        wrapping_info.wrap_ciphertext = URL_SAFE_NO_PAD.encode(&wrapped_key);
 
         recipient_vec.push((recipient.identity.to_string(), recipient.bundle.clone()));
         wrappings.push(wrapping_info);
@@ -128,7 +119,7 @@ pub fn decrypt_message(
 ) -> Result<Vec<u8>> {
     let signature_valid = sender_bundle.verify_signatures();
     let envelope_signature_valid =
-        verify_signature(parsed, &sender_bundle.signal_identity_public_key).is_ok();
+        verify_signature(parsed, &sender_bundle.identity_signing_public_key).is_ok();
     let expected_fp = sender_bundle.identity_fingerprint();
     let fingerprint_match = expected_fp
         .as_bytes()
@@ -172,32 +163,20 @@ pub fn decrypt_message(
     let mut nonce = Zeroizing::new([0u8; 24]);
     nonce.copy_from_slice(&nonce_bytes);
 
-    // Decode wrapping ciphertext: wrapped_key (72 bytes) || kyber_ct
-    let wrap_ciphertext_combined = URL_SAFE_NO_PAD
+    // Decode wrapping ciphertext: wrapped_key (72 bytes)
+    let wrapped_file_key = URL_SAFE_NO_PAD
         .decode(&wrapping.wrap_ciphertext)
         .map_err(|_| KeyError::InvalidFormat)?;
 
-    if wrap_ciphertext_combined.len() < WRAPPED_KEY_SIZE {
+    if wrapped_file_key.len() != WRAPPED_KEY_SIZE {
         return Err(KeyError::InvalidFormat);
     }
 
-    // Split wrapped file key and kyber ciphertext
-    let (wrapped_file_key, kyber_ct) = wrap_ciphertext_combined.split_at(WRAPPED_KEY_SIZE);
+    // Derive X3DH shared material
+    let x3dh_material = derive_recipient_shared_material(recipient_keys, sender_bundle, wrapping)?;
 
-    // Create modified wrapping with only kyber_ct for PQXDH derivation
-    let pqxdh_wrapping = WrappingInfo {
-        recipient_identity: wrapping.recipient_identity.clone(),
-        device_label: wrapping.device_label.clone(),
-        wrap_ephemeral_public: wrapping.wrap_ephemeral_public.clone(),
-        wrap_ciphertext: URL_SAFE_NO_PAD.encode(kyber_ct),
-    };
-
-    // Derive PQXDH shared material
-    let pqxdh_material =
-        derive_recipient_shared_material(recipient_keys, sender_bundle, &pqxdh_wrapping)?;
-
-    // Unwrap file key using PQXDH material
-    let file_key = unwrap_file_key(pqxdh_material.as_ref(), wrapped_file_key)?;
+    // Unwrap file key using X3DH material
+    let file_key = unwrap_file_key(x3dh_material.as_ref(), &wrapped_file_key)?;
 
     let cipher = XChaCha20Poly1305::new(Key::from_slice(&*file_key));
     cipher

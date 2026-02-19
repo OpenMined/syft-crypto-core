@@ -33,7 +33,7 @@ fn test_build_envelope_and_verify_signature() {
     // Verify signature
     let result = syft_crypto_protocol::envelope::verify_signature(
         &parsed,
-        sender_sk.identity().identity_key(),
+        &sender_sk.identity().verifying_key(),
     );
 
     assert!(result.is_ok(), "Signature verification should succeed");
@@ -78,10 +78,7 @@ fn test_envelope_contains_valid_fingerprints() {
     // Verify recipient fingerprint formats
     let recipient_info = &parsed.prelude.recipients[0];
     let spk_fp = recipient_info.spk_fingerprint.as_ref().unwrap();
-    let pqspk_fp = recipient_info.pqspk_fingerprint.as_ref().unwrap();
-
     assert_eq!(spk_fp.len(), 64, "Should be SHA-256 fingerprint");
-    assert_eq!(pqspk_fp.len(), 64, "Should be SHA-256 fingerprint");
 }
 
 #[test]
@@ -116,7 +113,7 @@ fn test_signature_verification_fails_with_wrong_key() {
     // Try to verify with wrong key
     let result = syft_crypto_protocol::envelope::verify_signature(
         &parsed,
-        wrong_sk.identity().identity_key(),
+        &wrong_sk.identity().verifying_key(),
     );
 
     assert!(
@@ -149,7 +146,7 @@ fn test_signature_verification_checks_fingerprint() {
 
     let err = syft_crypto_protocol::envelope::verify_signature(
         &parsed,
-        sender_sk.identity().identity_key(),
+        &sender_sk.identity().verifying_key(),
     )
     .expect_err("fingerprint mismatch should fail");
 
@@ -213,7 +210,7 @@ fn test_envelope_with_multiple_recipients() {
     // Verify signature
     let result = syft_crypto_protocol::envelope::verify_signature(
         &parsed,
-        sender_sk.identity().identity_key(),
+        &sender_sk.identity().verifying_key(),
     );
     assert!(result.is_ok(), "Signature should be valid");
 }
@@ -301,8 +298,8 @@ fn test_envelope_format_has_syc_magic() {
     // Check magic bytes
     assert_eq!(
         &envelope_bytes[0..4],
-        b"SYC1",
-        "Should start with SYC1 magic"
+        b"SYC2",
+        "Should start with SYC2 magic"
     );
 
     // Check version
@@ -362,14 +359,14 @@ fn test_deterministic_fingerprints_in_envelope() {
     assert!(
         syft_crypto_protocol::envelope::verify_signature(
             &parsed1,
-            sender_sk.identity().identity_key()
+            &sender_sk.identity().verifying_key()
         )
         .is_ok()
     );
     assert!(
         syft_crypto_protocol::envelope::verify_signature(
             &parsed2,
-            sender_sk.identity().identity_key()
+            &sender_sk.identity().verifying_key()
         )
         .is_ok()
     );
@@ -670,7 +667,7 @@ fn test_envelope_roundtrip_preserves_all_fields() {
     // Verify signature
     let verify_result = syft_crypto_protocol::envelope::verify_signature(
         &parsed,
-        sender_sk.identity().identity_key(),
+        &sender_sk.identity().verifying_key(),
     );
     assert!(verify_result.is_ok(), "Signature should verify correctly");
 }
@@ -715,7 +712,7 @@ fn test_envelope_with_large_prelude() {
     // Verify signature works with large prelude
     let verify_result = syft_crypto_protocol::envelope::verify_signature(
         &parsed,
-        sender_sk.identity().identity_key(),
+        &sender_sk.identity().verifying_key(),
     );
     assert!(verify_result.is_ok());
 }
@@ -756,7 +753,7 @@ fn test_envelope_with_unicode_identities() {
     // Verify signature with Unicode identities
     let verify_result = syft_crypto_protocol::envelope::verify_signature(
         &parsed,
-        sender_sk.identity().identity_key(),
+        &sender_sk.identity().verifying_key(),
     );
     assert!(verify_result.is_ok());
 }
@@ -789,7 +786,7 @@ fn test_envelope_signature_covers_full_prelude() {
     assert!(
         syft_crypto_protocol::envelope::verify_signature(
             &parsed,
-            sender_sk.identity().identity_key()
+            &sender_sk.identity().verifying_key()
         )
         .is_ok()
     );
@@ -808,7 +805,7 @@ fn test_envelope_signature_covers_full_prelude() {
     // Signature should now fail (proves signature covers sender identity)
     let result = syft_crypto_protocol::envelope::verify_signature(
         &tampered_parsed,
-        sender_sk.identity().identity_key(),
+        &sender_sk.identity().verifying_key(),
     );
     assert!(
         result.is_err(),
@@ -841,7 +838,7 @@ fn test_envelope_padding_not_signed() {
     assert!(
         syft_crypto_protocol::envelope::verify_signature(
             &parsed,
-            sender_sk.identity().identity_key()
+            &sender_sk.identity().verifying_key()
         )
         .is_ok()
     );
@@ -849,25 +846,31 @@ fn test_envelope_padding_not_signed() {
     // Verify that the signature only covers prelude metadata (plus domain separator),
     // not the ciphertext or padding
     let mut message = Vec::new();
-    message.extend_from_slice(b"SYC1-PRELUDE");
+    message.extend_from_slice(b"SYC2-PRELUDE");
     message.push(syft_crypto_protocol::envelope::CURRENT_VERSION);
     message.extend_from_slice(&parsed.prelude_bytes);
 
     assert!(
         sender_sk
             .identity()
-            .identity_key()
-            .public_key()
-            .verify_signature(&message, &parsed.signature),
+            .verifying_key()
+            .verify_strict(
+                &message,
+                &ed25519_dalek::Signature::from_slice(&parsed.signature).unwrap()
+            )
+            .is_ok(),
         "Signature should verify when domain-separated prelude is provided"
     );
 
     assert!(
-        !sender_sk
+        sender_sk
             .identity()
-            .identity_key()
-            .public_key()
-            .verify_signature(&parsed.prelude_bytes, &parsed.signature),
+            .verifying_key()
+            .verify_strict(
+                &parsed.prelude_bytes,
+                &ed25519_dalek::Signature::from_slice(&parsed.signature).unwrap()
+            )
+            .is_err(),
         "Raw prelude should fail verification without domain separator"
     );
 }
@@ -927,14 +930,14 @@ fn test_envelope_timestamp_changes_signature() {
     assert!(
         syft_crypto_protocol::envelope::verify_signature(
             &parsed1,
-            sender_sk.identity().identity_key()
+            &sender_sk.identity().verifying_key()
         )
         .is_ok()
     );
     assert!(
         syft_crypto_protocol::envelope::verify_signature(
             &parsed2,
-            sender_sk.identity().identity_key()
+            &sender_sk.identity().verifying_key()
         )
         .is_ok()
     );

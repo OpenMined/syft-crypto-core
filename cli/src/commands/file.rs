@@ -384,7 +384,7 @@ fn handle_file_inspect(context: &AppContext, args: FileInspectArgs) -> Result<()
     if let Some(parsed) = parse_optional_envelope(&bytes)? {
         println!(
             "  envelope magic: {} (version {})",
-            std::str::from_utf8(MAGIC).unwrap_or("SYC1"),
+            std::str::from_utf8(MAGIC).unwrap_or("SYC2"),
             CURRENT_VERSION
         );
         println!("  created_at: {}", parsed.prelude.created_at);
@@ -394,7 +394,7 @@ fn handle_file_inspect(context: &AppContext, args: FileInspectArgs) -> Result<()
         );
         report_sender_consistency(context, &parsed)?;
         match resolve_sender_bundle_for_decrypt(context, &parsed) {
-            Ok(bundle) => match verify_signature(&parsed, &bundle.signal_identity_public_key) {
+            Ok(bundle) => match verify_signature(&parsed, &bundle.identity_signing_public_key) {
                 Ok(()) => println!("  signature: valid (sender bundle cached)"),
                 Err(_) => println!("  signature: INVALID (signature mismatch)"),
             },
@@ -416,11 +416,10 @@ fn handle_file_inspect(context: &AppContext, args: FileInspectArgs) -> Result<()
                 .as_deref()
                 .unwrap_or("<unspecified-device>");
             println!(
-                "    - {} [{}] spk={} pqspk={}",
+                "    - {} [{}] spk={}",
                 identity,
                 device,
-                recipient.spk_fingerprint.as_deref().unwrap_or("<none>"),
-                recipient.pqspk_fingerprint.as_deref().unwrap_or("<none>")
+                recipient.spk_fingerprint.as_deref().unwrap_or("<none>")
             );
         }
         println!(

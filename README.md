@@ -1,10 +1,10 @@
 # syft-crypto-core
 
-End-to-end encrypted communication and file synchronization for SyftBox using the Signal protocol.
+End-to-end encrypted communication and file synchronization for SyftBox using X3DH key agreement.
 
 ## Overview
 
-This crate provides cryptographic primitives for secure messaging and file synchronization in SyftBox, built on top of [libsignal's implementation](https://github.com/signalapp/libsignal) of the Signal protocol. It includes support for the PQXDH key agreement protocol for post-quantum security via Kyber.
+This crate provides cryptographic primitives for secure messaging and file synchronization in SyftBox using Ed25519 identity signing, X25519 key agreement, and XChaCha20-Poly1305 for payload encryption.
 
 ## Status
 
@@ -12,7 +12,7 @@ This software is considered Beta so use at your own risk.
 
 ## Project Structure
 
-Following Signal's workspace pattern:
+Following the workspace pattern:
 
 ```
 syft-crypto-core/

@@ -1,3 +1,0 @@
-[submodule "vendor/libsignal-protocol-syft"]
-	path = vendor/libsignal-protocol-syft
-	url = git@github.com:OpenMined/libsignal-protocol-syft.git
