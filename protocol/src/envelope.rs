@@ -75,7 +75,7 @@ pub struct WrappingInfo {
 pub struct CipherInfo {
     pub suite: String,
     pub segment_count: u32,
-    pub last_segment_bytes: u32,
+    pub last_segment_bytes: u64,
     pub ciphertext_len: u64,
     pub nonce: String,
 }
@@ -433,13 +433,7 @@ fn build_prelude(
     let cipher = CipherInfo {
         suite: payload.cipher_suite.into(),
         segment_count: 1,
-        last_segment_bytes: u32::try_from(ciphertext_len).map_err(|_| {
-            format!(
-                "ciphertext too large: {} bytes (max: {})",
-                ciphertext_len,
-                u32::MAX
-            )
-        })?,
+        last_segment_bytes: ciphertext_len as u64,
         ciphertext_len: ciphertext_len as u64,
         nonce: payload.cipher_nonce_b64.to_string(),
     };
