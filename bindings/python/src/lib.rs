@@ -12,6 +12,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyModule};
 use rand::rng;
 use serde_json::{self, Value};
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
+use std::path::PathBuf;
 use syft_crypto_protocol as protocol;
 
 fn to_py_err<E: std::fmt::Display>(err: E) -> PyErr {
@@ -255,6 +258,45 @@ impl PyParsedEnvelope {
     }
 }
 
+/// The header of an envelope (prelude + signature) read from a file without loading the
+/// ciphertext. Returned by `parse_envelope_header_file`.
+#[pyclass(name = "ParsedEnvelopeHeader")]
+#[derive(Clone)]
+pub struct PyParsedEnvelopeHeader {
+    inner: protocol::envelope::ParsedEnvelopeHeader,
+}
+
+#[pymethods]
+impl PyParsedEnvelopeHeader {
+    #[getter]
+    pub fn prelude<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        let prelude_json = serde_json::to_value(&self.inner.prelude).map_err(to_py_err)?;
+        json_to_py(py, &prelude_json)
+    }
+
+    #[getter]
+    pub fn prelude_bytes<'py>(&self, py: Python<'py>) -> Py<PyBytes> {
+        PyBytes::new(py, &self.inner.prelude_bytes).into()
+    }
+
+    #[getter]
+    pub fn signature<'py>(&self, py: Python<'py>) -> Py<PyBytes> {
+        PyBytes::new(py, &self.inner.signature).into()
+    }
+
+    /// Bytes the header occupies on disk; the ciphertext starts at this offset.
+    #[getter]
+    pub fn header_len(&self) -> PyResult<usize> {
+        self.inner.header_len().map_err(to_py_err)
+    }
+
+    /// Total ciphertext bytes declared by the (signed) prelude.
+    #[getter]
+    pub fn ciphertext_len(&self) -> u64 {
+        self.inner.prelude.cipher.ciphertext_len
+    }
+}
+
 #[pyfunction]
 pub fn compute_key_fingerprint(key_bytes: &[u8]) -> String {
     protocol::compute_key_fingerprint(key_bytes)
@@ -351,6 +393,135 @@ pub fn decrypt_message(
     Ok(PyBytes::new(py, &plaintext).into())
 }
 
+/// Parse only the header of an envelope file (magic, version, prelude, signature).
+///
+/// Reads a few KiB regardless of the file size, so the sender can be verified with
+/// `verify_envelope_header_signature` before decrypting anything.
+#[pyfunction]
+pub fn parse_envelope_header_file(path: PathBuf) -> PyResult<PyParsedEnvelopeHeader> {
+    let mut reader = BufReader::new(File::open(&path)?);
+    let inner = protocol::envelope::parse_envelope_header(&mut reader).map_err(to_py_err)?;
+    Ok(PyParsedEnvelopeHeader { inner })
+}
+
+/// Verify the sender signature on a header returned by `parse_envelope_header_file`.
+#[pyfunction]
+pub fn verify_envelope_header_signature(
+    header: &PyParsedEnvelopeHeader,
+    sender_identity_key: &[u8],
+) -> PyResult<()> {
+    let identity_key_bytes: [u8; 32] = sender_identity_key
+        .try_into()
+        .map_err(|_| PyValueError::new_err("invalid sender identity key"))?;
+    let identity_key = VerifyingKey::from_bytes(&identity_key_bytes)
+        .map_err(|_| PyValueError::new_err("invalid sender identity key"))?;
+    protocol::envelope::verify_header_signature(&header.inner, &identity_key).map_err(to_py_err)
+}
+
+/// Encrypt the file at `src_path` into a SYC envelope at `dst_path`, streaming segment by
+/// segment so memory use is bounded by `segment_size` (default 1 MiB) rather than the file
+/// size. The GIL is released while encrypting. Returns the number of envelope bytes written.
+#[pyfunction(signature = (sender_identity, sender_keys, recipients, src_path, dst_path, filename_hint=None, segment_size=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn encrypt_file(
+    py: Python<'_>,
+    sender_identity: &str,
+    sender_keys: &PySyftPrivateKeys,
+    recipients: Vec<Py<PyEncryptionRecipient>>,
+    src_path: PathBuf,
+    dst_path: PathBuf,
+    filename_hint: Option<String>,
+    segment_size: Option<usize>,
+) -> PyResult<u64> {
+    let mut bundles = Vec::with_capacity(recipients.len());
+    let mut identities = Vec::with_capacity(recipients.len());
+    for recipient in &recipients {
+        let recipient = recipient.borrow(py);
+        identities.push(recipient.identity.clone());
+        bundles.push(recipient.bundle.clone());
+    }
+    let sender_keys = &sender_keys.inner;
+
+    py.allow_threads(move || -> PyResult<u64> {
+        let enc_recipients: Vec<protocol::encryption::EncryptionRecipient<'_>> = identities
+            .iter()
+            .zip(bundles.iter())
+            .map(
+                |(identity, bundle)| protocol::encryption::EncryptionRecipient { identity, bundle },
+            )
+            .collect();
+
+        let result = (|| -> PyResult<u64> {
+            let plaintext_len = std::fs::metadata(&src_path)?.len();
+            let mut reader = BufReader::new(File::open(&src_path)?);
+            let mut writer = BufWriter::new(File::create(&dst_path)?);
+            let mut rng = rng();
+            let written = protocol::encrypt_stream(
+                sender_identity,
+                sender_keys,
+                &enc_recipients,
+                plaintext_len,
+                &mut reader,
+                &mut writer,
+                segment_size,
+                filename_hint.as_deref(),
+                &mut rng,
+            )
+            .map_err(to_py_err)?;
+            writer
+                .into_inner()
+                .map_err(|e| to_py_err(e.to_string()))?
+                .sync_all()?;
+            Ok(written)
+        })();
+        if result.is_err() {
+            // Never leave a partial envelope behind.
+            let _ = std::fs::remove_file(&dst_path);
+        }
+        result
+    })
+}
+
+/// Decrypt the SYC envelope at `src_path` into `dst_path`, streaming segment by segment. The
+/// header signature and recipient are verified before any ciphertext is read. The GIL is
+/// released while decrypting. Returns the number of plaintext bytes written.
+#[pyfunction]
+pub fn decrypt_file(
+    py: Python<'_>,
+    recipient_identity: &str,
+    recipient_keys: &PySyftPrivateKeys,
+    sender_bundle: &PySyftPublicKeyBundle,
+    src_path: PathBuf,
+    dst_path: PathBuf,
+) -> PyResult<u64> {
+    let recipient_keys = &recipient_keys.inner;
+    let sender_bundle = &sender_bundle.inner;
+    py.allow_threads(move || -> PyResult<u64> {
+        let result = (|| -> PyResult<u64> {
+            let mut reader = BufReader::new(File::open(&src_path)?);
+            let mut writer = BufWriter::new(File::create(&dst_path)?);
+            let written = protocol::decrypt_stream(
+                recipient_identity,
+                recipient_keys,
+                sender_bundle,
+                &mut reader,
+                &mut writer,
+            )
+            .map_err(to_py_err)?;
+            writer
+                .into_inner()
+                .map_err(|e| to_py_err(e.to_string()))?
+                .sync_all()?;
+            Ok(written)
+        })();
+        if result.is_err() {
+            // Never leave partially decrypted (unauthenticated) plaintext behind.
+            let _ = std::fs::remove_file(&dst_path);
+        }
+        result
+    })
+}
+
 /// Python module definition.
 #[pymodule(name = "_native")]
 fn _native(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -360,6 +531,7 @@ fn _native(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEncryptionRecipient>()?;
     m.add_class::<PyIdentityMaterial>()?;
     m.add_class::<PyParsedEnvelope>()?;
+    m.add_class::<PyParsedEnvelopeHeader>()?;
 
     m.add_function(wrap_pyfunction!(compute_key_fingerprint, m)?)?;
     m.add_function(wrap_pyfunction!(compute_identity_fingerprint, m)?)?;
@@ -368,6 +540,10 @@ fn _native(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(verify_envelope_signature, m)?)?;
     m.add_function(wrap_pyfunction!(encrypt_message, m)?)?;
     m.add_function(wrap_pyfunction!(decrypt_message, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_envelope_header_file, m)?)?;
+    m.add_function(wrap_pyfunction!(verify_envelope_header_signature, m)?)?;
+    m.add_function(wrap_pyfunction!(encrypt_file, m)?)?;
+    m.add_function(wrap_pyfunction!(decrypt_file, m)?)?;
 
     Ok(())
 }
