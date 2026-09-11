@@ -38,6 +38,7 @@ def test_file_round_trip_is_memory_bounded(tmp_path, parties):
             f.write(os.urandom(1024 * 1024))
         f.write(b"x" * 17)
 
+    # Single thread first: memory must stay at a few segments.
     before = peak_rss_bytes()
     written = syc.encrypt_file(
         SENDER,
@@ -46,15 +47,27 @@ def test_file_round_trip_is_memory_bounded(tmp_path, parties):
         src,
         enc,
         filename_hint="in.bin",
+        parallelism=1,
     )
-    read_back = syc.decrypt_file(RECIPIENT, rkeys, sbundle, enc, dst)
+    read_back = syc.decrypt_file(RECIPIENT, rkeys, sbundle, enc, dst, parallelism=1)
     grown = peak_rss_bytes() - before
-
     assert written == enc.stat().st_size
     assert read_back == size
     assert dst.read_bytes() == src.read_bytes()
-    # 64 MiB payload; the process must not have grown by anything close to it.
     assert grown < 16 * 1024 * 1024, f"RSS grew by {grown / 2**20:.1f} MiB"
+
+    # All cores: memory scales with workers (about 2 segments per worker), never with the file.
+    workers = min(os.cpu_count() or 1, 32)
+    before = peak_rss_bytes()
+    syc.encrypt_file(
+        SENDER, skeys, [syc.EncryptionRecipient(RECIPIENT, rbundle)], src, enc
+    )
+    assert syc.decrypt_file(RECIPIENT, rkeys, sbundle, enc, dst) == size
+    grown = peak_rss_bytes() - before
+    assert dst.read_bytes() == src.read_bytes()
+    assert grown < (2 * workers + 8) * 1024 * 1024, (
+        f"RSS grew by {grown / 2**20:.1f} MiB with {workers} workers"
+    )
 
 
 def test_header_parses_and_verifies_without_reading_ciphertext(tmp_path, parties):

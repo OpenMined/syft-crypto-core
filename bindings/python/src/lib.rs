@@ -419,9 +419,10 @@ pub fn verify_envelope_header_signature(
 }
 
 /// Encrypt the file at `src_path` into a SYC envelope at `dst_path`, streaming segment by
-/// segment so memory use is bounded by `segment_size` (default 1 MiB) rather than the file
-/// size. The GIL is released while encrypting. Returns the number of envelope bytes written.
-#[pyfunction(signature = (sender_identity, sender_keys, recipients, src_path, dst_path, filename_hint=None, segment_size=None))]
+/// segment so memory use is bounded by the segment size (default 1 MiB) times the worker
+/// count rather than the file size. Segments are sealed on `parallelism` threads (default: one
+/// per CPU). The GIL is released while encrypting. Returns the number of envelope bytes written.
+#[pyfunction(signature = (sender_identity, sender_keys, recipients, src_path, dst_path, filename_hint=None, segment_size=None, parallelism=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn encrypt_file(
     py: Python<'_>,
@@ -432,6 +433,7 @@ pub fn encrypt_file(
     dst_path: PathBuf,
     filename_hint: Option<String>,
     segment_size: Option<usize>,
+    parallelism: Option<usize>,
 ) -> PyResult<u64> {
     let mut bundles = Vec::with_capacity(recipients.len());
     let mut identities = Vec::with_capacity(recipients.len());
@@ -463,8 +465,11 @@ pub fn encrypt_file(
                 plaintext_len,
                 &mut reader,
                 &mut writer,
-                segment_size,
-                filename_hint.as_deref(),
+                &protocol::StreamOptions {
+                    segment_size: segment_size.unwrap_or(protocol::DEFAULT_SEGMENT_SIZE),
+                    parallelism: parallelism.unwrap_or(0),
+                    filename_hint: filename_hint.as_deref(),
+                },
                 &mut rng,
             )
             .map_err(to_py_err)?;
@@ -484,8 +489,9 @@ pub fn encrypt_file(
 
 /// Decrypt the SYC envelope at `src_path` into `dst_path`, streaming segment by segment. The
 /// header signature and recipient are verified before any ciphertext is read. The GIL is
-/// released while decrypting. Returns the number of plaintext bytes written.
-#[pyfunction]
+/// released while decrypting. `parallelism` is the number of segments opened concurrently
+/// (default: one per CPU). Returns the number of plaintext bytes written.
+#[pyfunction(signature = (recipient_identity, recipient_keys, sender_bundle, src_path, dst_path, parallelism=None))]
 pub fn decrypt_file(
     py: Python<'_>,
     recipient_identity: &str,
@@ -493,6 +499,7 @@ pub fn decrypt_file(
     sender_bundle: &PySyftPublicKeyBundle,
     src_path: PathBuf,
     dst_path: PathBuf,
+    parallelism: Option<usize>,
 ) -> PyResult<u64> {
     let recipient_keys = &recipient_keys.inner;
     let sender_bundle = &sender_bundle.inner;
@@ -506,6 +513,7 @@ pub fn decrypt_file(
                 sender_bundle,
                 &mut reader,
                 &mut writer,
+                parallelism.unwrap_or(0),
             )
             .map_err(to_py_err)?;
             writer

@@ -60,5 +60,8 @@ syc.decrypt_file("bob@example.com", bob_keys, alice_bundle,
                  "weights.safetensors.syc", "weights.safetensors")
 ```
 
+Segments are sealed and opened on all cores by default; pass `parallelism=1` to stay on one
+thread, or `segment_size=` to change the 1 MiB default.
+
 Both APIs read each other's envelopes: `decrypt_file` opens whole-payload envelopes and
 `decrypt_message` opens streamed ones. On any error the partially written output file is removed.

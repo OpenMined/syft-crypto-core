@@ -3,9 +3,9 @@
 
 use std::io::{Cursor, Read, Write};
 use syft_crypto_protocol::{
-    DEFAULT_SEGMENT_SIZE, FILE_CIPHER_SUITE, STREAM_CIPHER_SUITE, SegmentLayout, SyftPrivateKeys,
-    SyftPublicKeyBundle, SyftRecoveryKey, decrypt_message, decrypt_stream, encrypt_message,
-    encrypt_stream,
+    DEFAULT_SEGMENT_SIZE, FILE_CIPHER_SUITE, STREAM_CIPHER_SUITE, SegmentLayout, StreamOptions,
+    SyftPrivateKeys, SyftPublicKeyBundle, SyftRecoveryKey, decrypt_message, decrypt_stream,
+    encrypt_message, encrypt_stream,
     encryption::{EncryptionRecipient, TAG_LEN},
     envelope::{parse_envelope, parse_envelope_header, verify_header_signature},
 };
@@ -28,7 +28,21 @@ fn pattern(len: usize) -> Vec<u8> {
     (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect()
 }
 
-fn seal(sender: &Party, recipient: &Party, plaintext: &[u8], segment: Option<usize>) -> Vec<u8> {
+fn options(segment: Option<usize>, parallelism: usize) -> StreamOptions<'static> {
+    StreamOptions {
+        segment_size: segment.unwrap_or(DEFAULT_SEGMENT_SIZE),
+        parallelism,
+        filename_hint: Some("stream.bin"),
+    }
+}
+
+fn seal_with(
+    sender: &Party,
+    recipient: &Party,
+    plaintext: &[u8],
+    segment: Option<usize>,
+    parallelism: usize,
+) -> Vec<u8> {
     let mut out = Vec::new();
     let written = encrypt_stream(
         SENDER,
@@ -40,8 +54,7 @@ fn seal(sender: &Party, recipient: &Party, plaintext: &[u8], segment: Option<usi
         plaintext.len() as u64,
         &mut Cursor::new(plaintext),
         &mut out,
-        segment,
-        Some("stream.bin"),
+        &options(segment, parallelism),
         &mut rand::rng(),
     )
     .expect("encrypt_stream");
@@ -49,10 +62,15 @@ fn seal(sender: &Party, recipient: &Party, plaintext: &[u8], segment: Option<usi
     out
 }
 
-fn open(
+fn seal(sender: &Party, recipient: &Party, plaintext: &[u8], segment: Option<usize>) -> Vec<u8> {
+    seal_with(sender, recipient, plaintext, segment, 0)
+}
+
+fn open_with(
     sender: &Party,
     recipient: &Party,
     envelope: &[u8],
+    parallelism: usize,
 ) -> syft_crypto_protocol::Result<Vec<u8>> {
     let mut out = Vec::new();
     decrypt_stream(
@@ -61,8 +79,17 @@ fn open(
         &sender.bundle,
         &mut Cursor::new(envelope),
         &mut out,
+        parallelism,
     )
     .map(|_| out)
+}
+
+fn open(
+    sender: &Party,
+    recipient: &Party,
+    envelope: &[u8],
+) -> syft_crypto_protocol::Result<Vec<u8>> {
+    open_with(sender, recipient, envelope, 0)
 }
 
 fn header_len(envelope: &[u8]) -> usize {
@@ -167,8 +194,11 @@ fn multiple_recipients_can_each_open_a_stream() {
         plaintext.len() as u64,
         &mut Cursor::new(&plaintext),
         &mut envelope,
-        Some(700),
-        None,
+        &StreamOptions {
+            segment_size: 700,
+            parallelism: 3,
+            filename_hint: None,
+        },
         &mut rand::rng(),
     )
     .unwrap();
@@ -183,6 +213,7 @@ fn multiple_recipients_can_each_open_a_stream() {
             &sender.bundle,
             &mut Cursor::new(&envelope),
             &mut out,
+            2,
         )
         .unwrap();
         assert_eq!(out, plaintext);
@@ -195,7 +226,8 @@ fn multiple_recipients_can_each_open_a_stream() {
             &stranger.keys,
             &sender.bundle,
             &mut Cursor::new(&envelope),
-            &mut out
+            &mut out,
+            0
         )
         .is_err()
     );
@@ -311,6 +343,7 @@ fn dropped_middle_segment_is_rejected() {
         &sender.bundle,
         &mut Cursor::new(rebuild(&envelope, hdr, &segs)),
         &mut out,
+        0,
     );
     assert!(res.is_err());
 }
@@ -392,8 +425,7 @@ fn encrypt_rejects_reader_shorter_than_declared() {
         1500,
         &mut Cursor::new(&data),
         &mut out,
-        Some(300),
-        None,
+        &options(Some(300), 0),
         &mut rand::rng(),
     );
     assert!(res.is_err());
@@ -414,8 +446,7 @@ fn encrypt_rejects_reader_longer_than_declared() {
         900,
         &mut Cursor::new(&data),
         &mut out,
-        Some(300),
-        None,
+        &options(Some(300), 0),
         &mut rand::rng(),
     );
     assert!(res.is_err());
@@ -436,6 +467,65 @@ fn layout_rejects_inconsistent_prelude_values() {
     // consistent
     let ok = SegmentLayout::from_cipher_info(3, 20, 20 + 2 * (48 + 16)).unwrap();
     assert_eq!(ok.segment_size, 48);
+}
+
+// ============================================================================
+// Parallelism: any worker count produces and opens the same format
+// ============================================================================
+
+#[test]
+fn any_parallelism_produces_an_envelope_any_parallelism_can_open() {
+    let (sender, recipient) = (party(), party());
+    let seg = 4096;
+    // 23 segments: not a multiple of any batch size we try.
+    let plaintext = pattern(seg * 22 + 17);
+    for enc_par in [1, 2, 3, 0] {
+        let envelope = seal_with(&sender, &recipient, &plaintext, Some(seg), enc_par);
+        let parsed = parse_envelope(&envelope).unwrap();
+        assert_eq!(parsed.prelude.cipher.segment_count, 23);
+        for dec_par in [1, 2, 5, 0] {
+            let opened = open_with(&sender, &recipient, &envelope, dec_par).unwrap();
+            assert_eq!(opened, plaintext, "enc {enc_par} dec {dec_par}");
+        }
+        assert_eq!(
+            decrypt_message(RECIPIENT, &recipient.keys, &sender.bundle, &parsed).unwrap(),
+            plaintext
+        );
+    }
+}
+
+#[test]
+fn parallel_open_still_rejects_manipulated_segments() {
+    let (sender, recipient) = (party(), party());
+    let seg = 512;
+    let envelope = seal_with(&sender, &recipient, &pattern(seg * 9 + 1), Some(seg), 4);
+    let (hdr, segs) = segments(&envelope, seg);
+    for par in [1, 3, 0] {
+        let mut swapped = segs.clone();
+        swapped.swap(2, 7);
+        assert!(open_with(&sender, &recipient, &rebuild(&envelope, hdr, &swapped), par).is_err());
+        let mut flipped = envelope.clone();
+        flipped[hdr + 5 * (seg + TAG_LEN) + 3] ^= 0x80;
+        assert!(open_with(&sender, &recipient, &flipped, par).is_err());
+        let short = &envelope[..envelope.len() - 7];
+        assert!(open_with(&sender, &recipient, short, par).is_err());
+    }
+}
+
+#[test]
+fn parallelism_larger_than_segment_count_is_fine() {
+    let (sender, recipient) = (party(), party());
+    let plaintext = pattern(10);
+    let envelope = seal_with(&sender, &recipient, &plaintext, Some(64), 16);
+    assert_eq!(
+        open_with(&sender, &recipient, &envelope, 16).unwrap(),
+        plaintext
+    );
+    let envelope = seal_with(&sender, &recipient, &[], Some(64), 8);
+    assert_eq!(
+        open_with(&sender, &recipient, &envelope, 8).unwrap(),
+        Vec::<u8>::new()
+    );
 }
 
 // ============================================================================
@@ -467,8 +557,10 @@ fn file_round_trip_with_bounded_buffers() {
         len,
         &mut reader,
         &mut writer,
-        None,
-        Some("weights.bin"),
+        &StreamOptions {
+            filename_hint: Some("weights.bin"),
+            ..StreamOptions::default()
+        },
         &mut rand::rng(),
     )
     .unwrap();
@@ -483,6 +575,7 @@ fn file_round_trip_with_bounded_buffers() {
         &sender.bundle,
         &mut reader,
         &mut writer,
+        0,
     )
     .unwrap();
     writer.flush().unwrap();
