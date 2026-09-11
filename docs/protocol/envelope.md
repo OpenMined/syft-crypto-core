@@ -88,6 +88,12 @@ flagged final segment. The prelude that fixes the geometry is signed, so it cann
 match a manipulated stream. This is the STREAM construction (Hoang, Reyhanitabar, Rogaway, and
 Vizár), as also used by `age`.
 
+Because segments are independent, `encrypt_stream` and `decrypt_stream` seal and open them
+concurrently (one worker per CPU by default, capped at 32) and write them back in index order.
+The envelope produced is identical in format regardless of the worker count. Buffers are
+allocated once and sealed or opened in place, so peak memory is about `2 × workers × segment`,
+e.g. ~20 MiB on 10 cores with 1 MiB segments and ~2 MiB single-threaded.
+
 The plaintext length must be known before encryption starts because the signed prelude records
 the segment geometry. `encrypt_stream` refuses a reader that yields fewer or more bytes than
 declared.

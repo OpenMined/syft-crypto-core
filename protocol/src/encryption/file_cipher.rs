@@ -14,7 +14,7 @@
 use crate::Result;
 use chacha20poly1305::{
     Key, KeyInit, XChaCha20Poly1305, XNonce,
-    aead::{Aead, Payload},
+    aead::{Aead, AeadInPlace, Payload},
 };
 
 /// Additional authenticated data for whole-payload file encryption.
@@ -221,47 +221,38 @@ fn segment_aad(index: u32, last: bool) -> Vec<u8> {
     aad
 }
 
-/// Seal one segment of a streamed payload.
-pub(super) fn encrypt_segment(
+/// Seal one segment of a streamed payload in place: `buf` holds the plaintext on entry and the
+/// ciphertext plus tag on return. Working in place lets a stream reuse a fixed set of buffers,
+/// so no allocation happens per segment and plaintext bytes are overwritten as they are sealed.
+pub(super) fn encrypt_segment_in_place(
     key: &[u8; 32],
     nonce_prefix: &[u8; STREAM_NONCE_PREFIX_LEN],
     index: u32,
     last: bool,
-    plaintext: &[u8],
-) -> Result<Vec<u8>> {
+    buf: &mut Vec<u8>,
+) -> Result<()> {
     let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
     let nonce = segment_nonce(nonce_prefix, index, last);
     let aad = segment_aad(index, last);
     cipher
-        .encrypt(
-            XNonce::from_slice(&nonce),
-            Payload {
-                msg: plaintext,
-                aad: &aad,
-            },
-        )
+        .encrypt_in_place(XNonce::from_slice(&nonce), &aad, buf)
         .map_err(|_| "segment encryption failed".into())
 }
 
-/// Open one segment of a streamed payload. Fails if the segment was moved, altered, or is not
-/// the segment the caller expects at this position.
-pub(super) fn decrypt_segment(
+/// Open one segment of a streamed payload in place: `buf` holds the ciphertext plus tag on
+/// entry and the plaintext on success. Fails if the segment was moved, altered, or is not the
+/// segment the caller expects at this position; `buf` contents are unspecified on failure.
+pub(super) fn decrypt_segment_in_place(
     key: &[u8; 32],
     nonce_prefix: &[u8; STREAM_NONCE_PREFIX_LEN],
     index: u32,
     last: bool,
-    ciphertext: &[u8],
-) -> Result<Vec<u8>> {
+    buf: &mut Vec<u8>,
+) -> Result<()> {
     let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
     let nonce = segment_nonce(nonce_prefix, index, last);
     let aad = segment_aad(index, last);
     cipher
-        .decrypt(
-            XNonce::from_slice(&nonce),
-            Payload {
-                msg: ciphertext,
-                aad: &aad,
-            },
-        )
+        .decrypt_in_place(XNonce::from_slice(&nonce), &aad, buf)
         .map_err(|_| crate::error::KeyError::DecryptionFailed)
 }

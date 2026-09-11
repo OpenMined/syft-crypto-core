@@ -35,7 +35,7 @@ use chacha20poly1305::{
 use rand::{CryptoRng, RngCore};
 use std::io::{Read, Write};
 use subtle::{Choice, ConstantTimeEq};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 // Re-export public constants and types
 pub use file_cipher::{
@@ -45,7 +45,7 @@ pub use file_cipher::{
 
 // Import private functions from submodules
 use constant_time::ct_identity_match;
-use file_cipher::{decrypt_segment, encrypt_payload, encrypt_segment};
+use file_cipher::{decrypt_segment_in_place, encrypt_payload, encrypt_segment_in_place};
 use key_wrap::{WRAPPED_KEY_SIZE, unwrap_file_key, wrap_file_key};
 use x3dh::{derive_recipient_shared_material, derive_sender_shared_material};
 
@@ -148,12 +148,107 @@ pub fn encrypt_message<R: CryptoRng + RngCore>(
     )
 }
 
+/// Options for [`encrypt_stream`].
+#[derive(Debug, Clone)]
+pub struct StreamOptions<'a> {
+    /// Plaintext bytes per segment. Default [`DEFAULT_SEGMENT_SIZE`].
+    pub segment_size: usize,
+    /// Segments sealed concurrently. `0` means one per available CPU (capped at
+    /// [`MAX_PARALLELISM`]); `1` runs on the calling thread only. Default `0`.
+    pub parallelism: usize,
+    /// Optional public filename hint recorded in the prelude.
+    pub filename_hint: Option<&'a str>,
+}
+
+impl Default for StreamOptions<'_> {
+    fn default() -> Self {
+        Self {
+            segment_size: DEFAULT_SEGMENT_SIZE,
+            parallelism: 0,
+            filename_hint: None,
+        }
+    }
+}
+
+/// Upper bound on worker threads, so a machine with many cores does not turn a bounded-memory
+/// stream into `cores × batch` buffers.
+pub const MAX_PARALLELISM: usize = 32;
+
+/// Segments read (and held in memory) per worker before they are sealed or opened in parallel.
+/// Buffers are allocated once and reused, and the AEAD works in place, so peak memory of a
+/// stream is about `parallelism × BATCH_PER_WORKER × segment`.
+const BATCH_PER_WORKER: usize = 2;
+
+/// Resolve the requested parallelism to a concrete worker count.
+fn resolve_parallelism(requested: usize) -> usize {
+    let n = if requested == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        requested
+    };
+    n.clamp(1, MAX_PARALLELISM)
+}
+
+/// Apply `f` to every buffer concurrently on up to `workers` scoped threads. Segments are
+/// independent (each has its own nonce and tag), so this is what lets a streamed payload use
+/// every core without changing the wire format. `f` receives the segment's offset within the
+/// batch and works on the buffer in place.
+fn process_batch_in_place<F>(buffers: &mut [Zeroizing<Vec<u8>>], workers: usize, f: F) -> Result<()>
+where
+    F: Fn(usize, &mut Vec<u8>) -> Result<()> + Sync,
+{
+    let n = buffers.len();
+    let workers = workers.clamp(1, n.max(1));
+    if workers == 1 {
+        for (i, buf) in buffers.iter_mut().enumerate() {
+            f(i, buf)?;
+        }
+        return Ok(());
+    }
+    let per_worker = n.div_ceil(workers);
+    let results: Vec<Result<()>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = buffers
+            .chunks_mut(per_worker)
+            .enumerate()
+            .map(|(w, chunk)| {
+                let f = &f;
+                scope.spawn(move || {
+                    for (k, buf) in chunk.iter_mut().enumerate() {
+                        f(w * per_worker + k, buf)?;
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err("worker thread panicked".into()))
+            })
+            .collect()
+    });
+    results.into_iter().collect()
+}
+
+/// A fixed set of reusable segment buffers, one per batch slot, sized for a full segment plus
+/// its tag so neither sealing nor opening ever reallocates.
+fn segment_buffers(slots: usize, segment_size: usize) -> Vec<Zeroizing<Vec<u8>>> {
+    (0..slots)
+        .map(|_| Zeroizing::new(Vec::with_capacity(segment_size + TAG_LEN)))
+        .collect()
+}
+
 /// Encrypt `plaintext_len` bytes read from `reader` for the provided recipients, writing a fully
-/// formed SYC envelope to `writer`, while holding at most one segment in memory.
+/// formed SYC envelope to `writer`, with memory bounded by the segment size, not the payload.
 ///
 /// The payload is sealed with the streaming suite (`xchacha20poly1305-stream-v1`): the header
-/// is written first, then the plaintext is read, sealed, and written one segment at a time.
-/// `segment_size` is the plaintext bytes per segment (`None` = [`DEFAULT_SEGMENT_SIZE`]).
+/// is written first, then the plaintext is read, sealed, and written in batches of segments.
+/// Segments in a batch are sealed concurrently on `options.parallelism` threads and written in
+/// order, so throughput scales with cores while the envelope is byte-for-byte the same format a
+/// single thread would produce.
 ///
 /// The plaintext length must be known up front because the signed prelude records the segment
 /// geometry. The reader must yield exactly `plaintext_len` bytes: fewer is an error, and any
@@ -168,16 +263,14 @@ pub fn encrypt_stream<R: CryptoRng + RngCore, I: Read, O: Write>(
     plaintext_len: u64,
     reader: &mut I,
     writer: &mut O,
-    segment_size: Option<usize>,
-    filename_hint: Option<&str>,
+    options: &StreamOptions<'_>,
     rng: &mut R,
 ) -> Result<u64> {
     let sender_public_bundle = sender_keys.to_public_bundle(rng)?;
     let (file_key, recipient_vec, wrappings) =
         generate_and_wrap_file_key(sender_keys, recipients, rng)?;
 
-    let layout =
-        SegmentLayout::for_plaintext(plaintext_len, segment_size.unwrap_or(DEFAULT_SEGMENT_SIZE))?;
+    let layout = SegmentLayout::for_plaintext(plaintext_len, options.segment_size)?;
 
     let mut nonce_prefix = Zeroizing::new([0u8; STREAM_NONCE_PREFIX_LEN]);
     rng.fill_bytes(nonce_prefix.as_mut());
@@ -189,7 +282,7 @@ pub fn encrypt_stream<R: CryptoRng + RngCore, I: Read, O: Write>(
         segment_count: layout.segment_count,
         last_segment_bytes: layout.last_segment_bytes,
         ciphertext_len: layout.ciphertext_len,
-        filename_hint,
+        filename_hint: options.filename_hint,
     };
 
     let header = build_envelope_header_with_wrappings(
@@ -204,18 +297,37 @@ pub fn encrypt_stream<R: CryptoRng + RngCore, I: Read, O: Write>(
     writer.write_all(&header)?;
     let mut written = u64::try_from(header.len()).map_err(|_| "header too large")?;
 
-    let mut segment = Zeroizing::new(vec![0u8; layout.segment_size]);
-    for index in 0..layout.segment_count {
-        let last = layout.is_last(index);
-        let plaintext_len = usize::try_from(layout.segment_plaintext_len(index))
-            .map_err(|_| "segment does not fit in memory")?;
-        let buf = &mut segment[..plaintext_len];
-        reader
-            .read_exact(buf)
-            .map_err(|_| "plaintext ended before the declared length")?;
-        let sealed = encrypt_segment(&file_key, &nonce_prefix, index, last, buf)?;
-        writer.write_all(&sealed)?;
-        written += u64::try_from(sealed.len()).map_err(|_| "segment too large")?;
+    let workers = resolve_parallelism(options.parallelism);
+    let batch_len = workers * BATCH_PER_WORKER;
+    let file_key: &[u8; 32] = &file_key;
+    let nonce_prefix: &[u8; STREAM_NONCE_PREFIX_LEN] = &nonce_prefix;
+    let mut buffers = segment_buffers(batch_len, layout.segment_size);
+
+    let mut index = 0u32;
+    while index < layout.segment_count {
+        // Fill a batch of buffers with plaintext segments.
+        let first = index;
+        let mut filled = 0usize;
+        while index < layout.segment_count && filled < batch_len {
+            let len = usize::try_from(layout.segment_plaintext_len(index))
+                .map_err(|_| "segment does not fit in memory")?;
+            let buf = &mut buffers[filled];
+            buf.resize(len, 0);
+            reader
+                .read_exact(buf)
+                .map_err(|_| "plaintext ended before the declared length")?;
+            filled += 1;
+            index += 1;
+        }
+        // Seal them in place concurrently, then write in order.
+        process_batch_in_place(&mut buffers[..filled], workers, |k, buf| {
+            let i = first + u32::try_from(k).map_err(|_| "segment index overflow")?;
+            encrypt_segment_in_place(file_key, nonce_prefix, i, layout.is_last(i), buf)
+        })?;
+        for buf in &buffers[..filled] {
+            writer.write_all(buf)?;
+            written += u64::try_from(buf.len()).map_err(|_| "segment too large")?;
+        }
     }
 
     // The declared length is signed into the prelude: refuse to silently drop trailing input.
@@ -347,7 +459,7 @@ pub fn decrypt_message(
         let (prefix, layout) = stream_geometry(&parsed.prelude)?;
         let mut plaintext = Vec::with_capacity(usize::try_from(layout.ciphertext_len).unwrap_or(0));
         let mut reader = parsed.ciphertext.as_slice();
-        decrypt_segments(&file_key, &prefix, &layout, &mut reader, &mut plaintext)?;
+        decrypt_segments(&file_key, &prefix, &layout, &mut reader, &mut plaintext, 1)?;
         return Ok(plaintext);
     }
 
@@ -365,26 +477,46 @@ pub fn decrypt_message(
 }
 
 /// Read, open, and write every segment described by `layout`, then require end of input.
+///
+/// Segments are opened in place, concurrently on `workers` threads in batches, and written in
+/// order. Every segment authenticates its own index and last-flag, so concurrency cannot weaken
+/// the ordering or truncation checks: a segment that does not belong at its position simply
+/// fails to open. Buffers are zeroized after each batch is written.
 fn decrypt_segments<I: Read, O: Write>(
     file_key: &[u8; 32],
     nonce_prefix: &[u8; STREAM_NONCE_PREFIX_LEN],
     layout: &SegmentLayout,
     reader: &mut I,
     writer: &mut O,
+    workers: usize,
 ) -> Result<u64> {
-    let mut segment = vec![0u8; layout.segment_size + TAG_LEN];
+    let batch_len = workers * BATCH_PER_WORKER;
+    let mut buffers = segment_buffers(batch_len, layout.segment_size);
     let mut written = 0u64;
-    for index in 0..layout.segment_count {
-        let last = layout.is_last(index);
-        let ciphertext_len = usize::try_from(layout.segment_ciphertext_len(index))
-            .map_err(|_| "segment does not fit in memory")?;
-        let buf = &mut segment[..ciphertext_len];
-        reader
-            .read_exact(buf)
-            .map_err(|_| KeyError::DecryptionFailed)?;
-        let opened = Zeroizing::new(decrypt_segment(file_key, nonce_prefix, index, last, buf)?);
-        writer.write_all(&opened)?;
-        written += u64::try_from(opened.len()).map_err(|_| "segment too large")?;
+    let mut index = 0u32;
+    while index < layout.segment_count {
+        let first = index;
+        let mut filled = 0usize;
+        while index < layout.segment_count && filled < batch_len {
+            let len = usize::try_from(layout.segment_ciphertext_len(index))
+                .map_err(|_| "segment does not fit in memory")?;
+            let buf = &mut buffers[filled];
+            buf.resize(len, 0);
+            reader
+                .read_exact(buf)
+                .map_err(|_| KeyError::DecryptionFailed)?;
+            filled += 1;
+            index += 1;
+        }
+        process_batch_in_place(&mut buffers[..filled], workers, |k, buf| {
+            let i = first + u32::try_from(k).map_err(|_| "segment index overflow")?;
+            decrypt_segment_in_place(file_key, nonce_prefix, i, layout.is_last(i), buf)
+        })?;
+        for buf in &mut buffers[..filled] {
+            writer.write_all(buf)?;
+            written += u64::try_from(buf.len()).map_err(|_| "segment too large")?;
+            buf.zeroize();
+        }
     }
 
     // The last segment carries the terminal flag, so anything after it is an appended forgery.
@@ -402,6 +534,9 @@ fn decrypt_segments<I: Read, O: Write>(
 /// sealed with the streaming suite are opened segment by segment; envelopes sealed with the
 /// whole-payload suite are also accepted, but their ciphertext is necessarily buffered.
 ///
+/// `parallelism` is the number of segments opened concurrently (`0` = one per CPU, capped at
+/// [`MAX_PARALLELISM`]; `1` = calling thread only).
+///
 /// Returns the number of plaintext bytes written.
 pub fn decrypt_stream<I: Read, O: Write>(
     recipient_identity: &str,
@@ -409,6 +544,7 @@ pub fn decrypt_stream<I: Read, O: Write>(
     sender_bundle: &SyftPublicKeyBundle,
     reader: &mut I,
     writer: &mut O,
+    parallelism: usize,
 ) -> Result<u64> {
     let header: ParsedEnvelopeHeader = parse_envelope_header(reader)?;
     let envelope_signature_valid =
@@ -423,7 +559,8 @@ pub fn decrypt_stream<I: Read, O: Write>(
 
     if header.prelude.cipher.suite == STREAM_CIPHER_SUITE {
         let (prefix, layout) = stream_geometry(&header.prelude)?;
-        let written = decrypt_segments(&file_key, &prefix, &layout, reader, writer)?;
+        let workers = resolve_parallelism(parallelism);
+        let written = decrypt_segments(&file_key, &prefix, &layout, reader, writer, workers)?;
         writer.flush()?;
         return Ok(written);
     }
