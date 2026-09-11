@@ -9,6 +9,7 @@ use subtle::ConstantTimeEq;
 #[cfg(test)]
 use serde_json::json;
 use std::convert::TryFrom;
+use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const MAGIC: &[u8; 4] = b"SYC2";
@@ -25,6 +26,35 @@ pub struct EnvelopePayload<'a> {
     pub filename_hint: Option<&'a str>,
     pub cipher_suite: &'a str,
     pub cipher_nonce_b64: &'a str,
+}
+
+/// Cipher metadata for envelope construction when the ciphertext is not in memory.
+///
+/// Describes what the prelude's `cipher` section will say about a payload that is written
+/// separately (for example, streamed segment by segment after the header).
+pub struct CipherMeta<'a> {
+    pub cipher_suite: &'a str,
+    pub cipher_nonce_b64: &'a str,
+    pub segment_count: u32,
+    pub last_segment_bytes: u64,
+    pub ciphertext_len: u64,
+    pub filename_hint: Option<&'a str>,
+}
+
+impl<'a> CipherMeta<'a> {
+    /// Metadata for a whole-payload (single segment) envelope built from in-memory ciphertext.
+    pub fn for_payload(payload: &EnvelopePayload<'a>) -> Result<Self> {
+        let ciphertext_len = u64::try_from(payload.ciphertext.len())
+            .map_err(|_| "ciphertext too large to fit in 64-bit length")?;
+        Ok(Self {
+            cipher_suite: payload.cipher_suite,
+            cipher_nonce_b64: payload.cipher_nonce_b64,
+            segment_count: 1,
+            last_segment_bytes: ciphertext_len,
+            ciphertext_len,
+            filename_hint: payload.filename_hint,
+        })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -94,6 +124,35 @@ pub struct ParsedEnvelope {
     pub ciphertext: Vec<u8>,
 }
 
+/// The parsed header of an envelope: everything before the ciphertext.
+///
+/// Produced by [`parse_envelope_header`], which reads only the header from a stream so the
+/// (possibly very large) ciphertext can be consumed afterwards without loading it into memory.
+#[derive(Debug, Clone)]
+pub struct ParsedEnvelopeHeader {
+    pub prelude: EnvelopePrelude,
+    pub prelude_bytes: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
+impl ParsedEnvelopeHeader {
+    /// Number of bytes the header occupies on disk (magic through signature).
+    pub fn header_len(&self) -> Result<usize> {
+        let padded_len = align_to_block(self.prelude_bytes.len(), PRELUDE_PAD)?;
+        Ok(MAGIC.len() + 1 + 4 + padded_len + 2 + self.signature.len())
+    }
+}
+
+impl From<ParsedEnvelope> for ParsedEnvelopeHeader {
+    fn from(parsed: ParsedEnvelope) -> Self {
+        Self {
+            prelude: parsed.prelude,
+            prelude_bytes: parsed.prelude_bytes,
+            signature: parsed.signature,
+        }
+    }
+}
+
 pub fn has_syc_magic(bytes: &[u8]) -> bool {
     bytes.len() >= MAGIC.len() && &bytes[..MAGIC.len()] == MAGIC
 }
@@ -159,6 +218,72 @@ fn parse_prelude_section(bytes: &[u8], mut cursor: usize) -> Result<(Vec<u8>, us
     cursor = padded_end; // Skip to end of padded section
 
     Ok((prelude_bytes, cursor))
+}
+
+/// Read exactly `len` bytes from `reader`, mapping a short read to a truncation error.
+fn read_exact_or_truncated<R: Read>(reader: &mut R, len: usize, what: &str) -> Result<Vec<u8>> {
+    let mut buf = vec![0u8; len];
+    reader
+        .read_exact(&mut buf)
+        .map_err(|_| format!("file truncated while reading SYC {}", what))?;
+    Ok(buf)
+}
+
+/// Parse an envelope header (magic, version, prelude, signature) from a stream.
+///
+/// Reads only the header; the reader is left positioned at the first ciphertext byte, so the
+/// caller can stream the ciphertext with bounded memory (see `encryption::decrypt_stream`).
+/// The same checks as [`parse_envelope`] apply to the header. The ciphertext length recorded in
+/// the prelude is **not** validated here because the ciphertext has not been read.
+///
+/// After parsing, call [`verify_header_signature`] to authenticate the sender before trusting
+/// anything in the prelude.
+pub fn parse_envelope_header<R: Read>(reader: &mut R) -> Result<ParsedEnvelopeHeader> {
+    let mut magic_version = [0u8; 5];
+    reader
+        .read_exact(&mut magic_version)
+        .map_err(|_| "file is too small to contain SYC envelope header")?;
+    if &magic_version[..MAGIC.len()] != MAGIC {
+        return Err("file does not begin with SYC envelope magic".into());
+    }
+    let version = magic_version[MAGIC.len()];
+    if version != CURRENT_VERSION {
+        return Err(format!("unsupported SYC envelope version {}", version).into());
+    }
+
+    let mut len_bytes = [0u8; 4];
+    reader
+        .read_exact(&mut len_bytes)
+        .map_err(|_| "file truncated while reading SYC prelude length")?;
+    let prelude_len = u32::from_le_bytes(len_bytes) as usize;
+    if prelude_len > MAX_PRELUDE_SIZE {
+        return Err("prelude too large".into());
+    }
+    let padded_len = align_to_block(prelude_len, PRELUDE_PAD)?;
+    let mut padded = read_exact_or_truncated(reader, padded_len, "prelude")?;
+    padded.truncate(prelude_len);
+    let prelude_bytes = padded;
+
+    let mut sig_len_bytes = [0u8; 2];
+    reader
+        .read_exact(&mut sig_len_bytes)
+        .map_err(|_| "file truncated while reading SYC signature length")?;
+    let signature_len = u16::from_le_bytes(sig_len_bytes) as usize;
+    if signature_len != ED25519_SIGNATURE_LEN {
+        return Err(format!(
+            "invalid signature length: {} (expected {})",
+            signature_len, ED25519_SIGNATURE_LEN
+        )
+        .into());
+    }
+    let signature = read_exact_or_truncated(reader, signature_len, "signature")?;
+
+    let prelude: EnvelopePrelude = from_jcs_bytes(&prelude_bytes)?;
+    Ok(ParsedEnvelopeHeader {
+        prelude,
+        prelude_bytes,
+        signature,
+    })
 }
 
 /// Parse the signature section: length field and signature data.
@@ -335,16 +460,42 @@ pub fn verify_signature(
     parsed_envelope: &ParsedEnvelope,
     sender_identity_key: &VerifyingKey,
 ) -> Result<()> {
+    verify_prelude_signature(
+        &parsed_envelope.prelude,
+        &parsed_envelope.prelude_bytes,
+        &parsed_envelope.signature,
+        sender_identity_key,
+    )
+}
+
+/// Verify the signature of a header parsed with [`parse_envelope_header`].
+///
+/// Identical to [`verify_signature`] but does not require the ciphertext to be in memory.
+pub fn verify_header_signature(
+    header: &ParsedEnvelopeHeader,
+    sender_identity_key: &VerifyingKey,
+) -> Result<()> {
+    verify_prelude_signature(
+        &header.prelude,
+        &header.prelude_bytes,
+        &header.signature,
+        sender_identity_key,
+    )
+}
+
+fn verify_prelude_signature(
+    prelude: &EnvelopePrelude,
+    prelude_bytes: &[u8],
+    signature: &[u8],
+    sender_identity_key: &VerifyingKey,
+) -> Result<()> {
     let expected_fingerprint = compute_key_fingerprint(sender_identity_key.as_bytes());
-    if !fingerprints_match(
-        &expected_fingerprint,
-        &parsed_envelope.prelude.sender.ik_fingerprint,
-    ) {
+    if !fingerprints_match(&expected_fingerprint, &prelude.sender.ik_fingerprint) {
         return Err("sender fingerprint mismatch".into());
     }
 
-    let message = signing_message(&parsed_envelope.prelude_bytes);
-    let signature = ed25519_dalek::Signature::from_slice(&parsed_envelope.signature)
+    let message = signing_message(prelude_bytes);
+    let signature = ed25519_dalek::Signature::from_slice(signature)
         .map_err(|_| "SYC envelope signature verification failed")?;
     if sender_identity_key
         .verify_strict(&message, &signature)
@@ -364,9 +515,8 @@ fn build_prelude(
     sender_public_bundle: &SyftPublicKeyBundle,
     recipients: &[(String, SyftPublicKeyBundle)],
     wrappings: Vec<WrappingInfo>,
-    payload: &EnvelopePayload,
+    meta: &CipherMeta,
 ) -> Result<EnvelopePrelude> {
-    let ciphertext_len = payload.ciphertext.len();
     if recipients.len() > MAX_RECIPIENTS {
         return Err(format!(
             "too many recipients: {} (max {})",
@@ -431,14 +581,14 @@ fn build_prelude(
 
     // Build cipher info metadata
     let cipher = CipherInfo {
-        suite: payload.cipher_suite.into(),
-        segment_count: 1,
-        last_segment_bytes: ciphertext_len as u64,
-        ciphertext_len: ciphertext_len as u64,
-        nonce: payload.cipher_nonce_b64.to_string(),
+        suite: meta.cipher_suite.into(),
+        segment_count: meta.segment_count,
+        last_segment_bytes: meta.last_segment_bytes,
+        ciphertext_len: meta.ciphertext_len,
+        nonce: meta.cipher_nonce_b64.to_string(),
     };
 
-    let public_meta = payload.filename_hint.map(|hint| PublicMeta {
+    let public_meta = meta.filename_hint.map(|hint| PublicMeta {
         filename_hint: Some(hint.to_owned()),
     });
 
@@ -488,11 +638,44 @@ pub fn build_envelope_with_wrappings<R: rand::CryptoRng + rand::Rng>(
     payload: &EnvelopePayload,
     rng: &mut R,
 ) -> Result<Vec<u8>> {
+    if payload.ciphertext.is_empty() {
+        return Err("ciphertext cannot be empty".into());
+    }
+    let meta = CipherMeta::for_payload(payload)?;
+    let mut envelope = build_envelope_header_with_wrappings(
+        sender_identity,
+        sender_identity_key_pair,
+        sender_public_bundle,
+        recipients,
+        wrappings,
+        &meta,
+        rng,
+    )?;
+    envelope.reserve_exact(payload.ciphertext.len());
+    envelope.extend_from_slice(payload.ciphertext);
+    Ok(envelope)
+}
+
+/// Build the header of a SYC envelope (magic, version, signed prelude, signature) **without**
+/// the ciphertext, which the caller appends or streams afterwards.
+///
+/// This is the building block for streaming encryption: the prelude describes the ciphertext
+/// that will follow (`meta`), is signed, and can be written before any payload byte exists in
+/// memory. [`build_envelope_with_wrappings`] is this function plus the in-memory ciphertext.
+pub fn build_envelope_header_with_wrappings<R: rand::CryptoRng + rand::Rng>(
+    sender_identity: &str,
+    sender_identity_key_pair: &SigningKey,
+    sender_public_bundle: &SyftPublicKeyBundle,
+    recipients: &[(String, SyftPublicKeyBundle)],
+    wrappings: &[WrappingInfo],
+    meta: &CipherMeta,
+    rng: &mut R,
+) -> Result<Vec<u8>> {
     // Validate inputs
     if sender_identity.is_empty() {
         return Err("sender_identity cannot be empty".into());
     }
-    if payload.ciphertext.is_empty() {
+    if meta.ciphertext_len == 0 {
         return Err("ciphertext cannot be empty".into());
     }
 
@@ -511,7 +694,7 @@ pub fn build_envelope_with_wrappings<R: rand::CryptoRng + rand::Rng>(
         sender_public_bundle,
         recipients,
         wrappings.to_vec(),
-        payload,
+        meta,
     )?;
 
     // Serialize prelude to canonical JSON
@@ -522,15 +705,14 @@ pub fn build_envelope_with_wrappings<R: rand::CryptoRng + rand::Rng>(
     // Sign the prelude with sender's identity private key
     let signature = sign_prelude(&prelude_bytes, sender_identity_key_pair, rng)?;
 
-    // Assemble the envelope
+    // Assemble the header
     let mut envelope = Vec::with_capacity(
         MAGIC.len()
             + 1  // version byte
             + std::mem::size_of::<u32>()  // prelude length
             + padded_len
             + std::mem::size_of::<u16>()  // signature length
-            + signature.len()
-            + payload.ciphertext.len(),
+            + signature.len(),
     );
 
     envelope.extend_from_slice(MAGIC);
@@ -542,7 +724,6 @@ pub fn build_envelope_with_wrappings<R: rand::CryptoRng + rand::Rng>(
     }
     envelope.extend_from_slice(&u16::try_from(signature.len())?.to_le_bytes());
     envelope.extend_from_slice(&signature);
-    envelope.extend_from_slice(payload.ciphertext);
 
     Ok(envelope)
 }

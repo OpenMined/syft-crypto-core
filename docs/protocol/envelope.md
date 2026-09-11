@@ -47,6 +47,55 @@ The header is binary. If you dump the file as UTF‑8 you may see odd characters
 
 ---
 
+## Cipher Suites and the Ciphertext Stream
+
+The bytes after the signature are described by the prelude's `cipher` section. Two suites exist;
+both use the same key agreement, key wrapping, signing, and header, and differ only in how the
+payload is sealed.
+
+### `xchacha20poly1305-v1` (whole payload)
+
+One XChaCha20-Poly1305 call over the entire plaintext with a random 24-byte nonce
+(`cipher.nonce`, base64url) and AAD `syc-file-v1`. `segment_count` is always `1` and
+`last_segment_bytes == ciphertext_len`. This is what `encrypt_message` produces and it requires
+the whole payload in memory on both sides.
+
+### `xchacha20poly1305-stream-v1` (segmented)
+
+The plaintext is split into fixed-size segments (default 1 MiB, at most 256 MiB) and each
+segment is sealed separately, so a payload of any size can be encrypted and decrypted with one
+segment of memory. This is what `encrypt_stream` produces; `decrypt_stream` opens it with
+bounded memory and `decrypt_message` opens it from memory.
+
+```
+┌──────────────────┬──────────────────┬─────┬──────────────────────────┐
+│ segment 0 + tag  │ segment 1 + tag  │ ... │ last segment + tag (flag)│
+└──────────────────┴──────────────────┴─────┴──────────────────────────┘
+```
+
+- `cipher.nonce` holds a random **19-byte** prefix (base64url).
+- The nonce of segment `i` is `prefix || i (u32, big-endian) || last`, where `last` is `1`
+  only for the final segment. AAD is `syc-stream-v1 || i (u32, big-endian) || last`.
+- Every segment carries its own 16-byte Poly1305 tag.
+- `segment_count`, `last_segment_bytes` (ciphertext bytes of the final segment, tag included)
+  and `ciphertext_len` describe the geometry; the segment size is derived from them, so no new
+  prelude field was introduced and older tooling can still parse and inspect the header.
+- An empty payload is one empty segment (16 bytes of ciphertext).
+
+Because the index and the terminal flag are bound into both the nonce and the AAD, a segment
+that is moved, duplicated, dropped, or truncated fails authentication, and nothing may follow the
+flagged final segment. The prelude that fixes the geometry is signed, so it cannot be altered to
+match a manipulated stream. This is the STREAM construction (Hoang, Reyhanitabar, Rogaway, and
+Vizár), as also used by `age`.
+
+The plaintext length must be known before encryption starts because the signed prelude records
+the segment geometry. `encrypt_stream` refuses a reader that yields fewer or more bytes than
+declared.
+
+Readers that predate this suite reject it with an invalid-format error rather than misreading it.
+
+---
+
 ## Prelude Schema
 
 ```jsonc
@@ -77,8 +126,8 @@ The header is binary. If you dump the file as UTF‑8 you may see odd characters
 	],
 	"cipher": {
 		"suite": "xchacha20poly1305-v1",
-		"segment_count": 1,
-		"last_segment_bytes": 1234,
+		"segment_count": 1,           // >1 for the streaming suite
+		"last_segment_bytes": 1234,   // ciphertext bytes of the final segment (tag included)
 		"ciphertext_len": 1234,
 		"nonce": "base64urlnonce",
 	},
@@ -94,7 +143,7 @@ Fields correspond to Syft terminology:
 - `sender.identity` / `sender.ik_fingerprint` describe the author (later derived from the Ed25519 identity key).
 - Each entry in `recipients` mirrors a device binding: signed prekey fingerprint and the signed prekey ID.
 - `wrappings` contain X3DH outputs: sender’s ephemeral public key and the wrapped file key for each target device.
-- `cipher` summarises the Double Ratchet file-layer stats so `inspect` can report segment sizes without decryption.
+- `cipher` names the suite and the segment geometry so `inspect` can report segment sizes without decryption (see *Cipher Suites and the Ciphertext Stream*).
 - `integrity` will eventually hold a base64url SHA-256 hash of the ciphertext for tamper detection.
 - `public_meta` carries small hints (e.g., `filename_hint`) that do not compromise confidentiality.
 

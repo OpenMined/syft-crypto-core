@@ -5,6 +5,15 @@
 //! - **Multi-recipient support**: Encrypt once, wrap the key N times for N recipients
 //! - **XChaCha20-Poly1305 AEAD**: recommended attachment cipher
 //! - **Forward secrecy**: Fresh ephemeral keys for each encryption
+//!
+//! Two entry points share the same key agreement, wrapping, and envelope:
+//! - [`encrypt_message`] / [`decrypt_message`] work on in-memory bytes.
+//! - [`encrypt_stream`] / [`decrypt_stream`] work on `Read` / `Write` and hold at most one
+//!   segment in memory, for payloads larger than RAM.
+//!
+//! [`decrypt_message`] understands both cipher suites, so any envelope can be opened from
+//! memory; [`decrypt_stream`] likewise opens both, but only the streaming suite with bounded
+//! memory.
 
 mod constant_time;
 mod file_cipher;
@@ -12,7 +21,9 @@ mod key_wrap;
 mod x3dh;
 
 use crate::envelope::{
-    EnvelopePayload, ParsedEnvelope, build_envelope_with_wrappings, verify_signature,
+    CipherMeta, EnvelopePayload, EnvelopePrelude, ParsedEnvelope, ParsedEnvelopeHeader,
+    WrappingInfo, build_envelope_header_with_wrappings, build_envelope_with_wrappings,
+    parse_envelope_header, verify_header_signature, verify_signature,
 };
 use crate::keys::{SyftPrivateKeys, SyftPublicKeyBundle};
 use crate::{Result, error::KeyError};
@@ -22,15 +33,19 @@ use chacha20poly1305::{
     aead::{Aead, Payload},
 };
 use rand::{CryptoRng, RngCore};
+use std::io::{Read, Write};
 use subtle::{Choice, ConstantTimeEq};
 use zeroize::Zeroizing;
 
-// Re-export public constants
-pub use file_cipher::FILE_CIPHER_SUITE;
+// Re-export public constants and types
+pub use file_cipher::{
+    DEFAULT_SEGMENT_SIZE, FILE_CIPHER_SUITE, MAX_SEGMENT_SIZE, STREAM_CIPHER_SUITE,
+    STREAM_NONCE_PREFIX_LEN, SegmentLayout, TAG_LEN,
+};
 
 // Import private functions from submodules
 use constant_time::ct_identity_match;
-use file_cipher::encrypt_payload;
+use file_cipher::{decrypt_segment, encrypt_payload, encrypt_segment};
 use key_wrap::{WRAPPED_KEY_SIZE, unwrap_file_key, wrap_file_key};
 use x3dh::{derive_recipient_shared_material, derive_sender_shared_material};
 
@@ -43,36 +58,31 @@ pub struct EncryptionRecipient<'a> {
     pub bundle: &'a SyftPublicKeyBundle,
 }
 
-/// Encrypt plaintext bytes for the provided recipients, returning a fully formed SYC envelope.
+/// A freshly generated file key together with the `(identity, bundle)` list and wrapping
+/// metadata the envelope builder expects.
+type WrappedFileKey = (
+    Zeroizing<[u8; 32]>,
+    Vec<(String, SyftPublicKeyBundle)>,
+    Vec<WrappingInfo>,
+);
+
+/// Generate a random file key and wrap it for every recipient.
 ///
-/// Supports multiple recipients - the file is encrypted once with a random key, then that key
-/// is wrapped separately for each recipient using X3DH-derived material.
-pub fn encrypt_message<R: CryptoRng + RngCore>(
-    sender_identity: &str,
+/// Shared by the in-memory and streaming encryptors.
+fn generate_and_wrap_file_key<R: CryptoRng + RngCore>(
     sender_keys: &SyftPrivateKeys,
     recipients: &[EncryptionRecipient<'_>],
-    plaintext: &[u8],
-    filename_hint: Option<&str>,
     rng: &mut R,
-) -> Result<Vec<u8>> {
+) -> Result<WrappedFileKey> {
     if recipients.is_empty() {
         return Err("at least one recipient is required".into());
     }
 
-    let sender_public_bundle = sender_keys.to_public_bundle(rng)?;
-
-    // Generate a random file encryption key
     let file_key = Zeroizing::new({
         let mut key = [0u8; 32];
         rng.fill_bytes(&mut key);
         key
     });
-
-    // Encrypt the file / the payload once with the generated random key
-    let mut file_nonce = Zeroizing::new([0u8; 24]);
-    rng.fill_bytes(file_nonce.as_mut());
-    let nonce_b64 = URL_SAFE_NO_PAD.encode(file_nonce.as_ref());
-    let ciphertext = encrypt_payload(&file_key, &file_nonce, plaintext)?;
 
     // Wrap file key for each recipient (Key Encapsulation Mechanism)
     let mut recipient_vec = Vec::with_capacity(recipients.len());
@@ -92,6 +102,34 @@ pub fn encrypt_message<R: CryptoRng + RngCore>(
         wrappings.push(wrapping_info);
     }
 
+    Ok((file_key, recipient_vec, wrappings))
+}
+
+/// Encrypt plaintext bytes for the provided recipients, returning a fully formed SYC envelope.
+///
+/// Supports multiple recipients - the file is encrypted once with a random key, then that key
+/// is wrapped separately for each recipient using X3DH-derived material.
+///
+/// The payload is sealed in one piece (`xchacha20poly1305-v1`); for payloads that should not be
+/// held in memory at once use [`encrypt_stream`].
+pub fn encrypt_message<R: CryptoRng + RngCore>(
+    sender_identity: &str,
+    sender_keys: &SyftPrivateKeys,
+    recipients: &[EncryptionRecipient<'_>],
+    plaintext: &[u8],
+    filename_hint: Option<&str>,
+    rng: &mut R,
+) -> Result<Vec<u8>> {
+    let sender_public_bundle = sender_keys.to_public_bundle(rng)?;
+    let (file_key, recipient_vec, wrappings) =
+        generate_and_wrap_file_key(sender_keys, recipients, rng)?;
+
+    // Encrypt the file / the payload once with the generated random key
+    let mut file_nonce = Zeroizing::new([0u8; 24]);
+    rng.fill_bytes(file_nonce.as_mut());
+    let nonce_b64 = URL_SAFE_NO_PAD.encode(file_nonce.as_ref());
+    let ciphertext = encrypt_payload(&file_key, &file_nonce, plaintext)?;
+
     let payload = EnvelopePayload {
         ciphertext: &ciphertext,
         filename_hint,
@@ -110,20 +148,102 @@ pub fn encrypt_message<R: CryptoRng + RngCore>(
     )
 }
 
-/// Decrypt an envelope for the active recipient.
-pub fn decrypt_message(
+/// Encrypt `plaintext_len` bytes read from `reader` for the provided recipients, writing a fully
+/// formed SYC envelope to `writer`, while holding at most one segment in memory.
+///
+/// The payload is sealed with the streaming suite (`xchacha20poly1305-stream-v1`): the header
+/// is written first, then the plaintext is read, sealed, and written one segment at a time.
+/// `segment_size` is the plaintext bytes per segment (`None` = [`DEFAULT_SEGMENT_SIZE`]).
+///
+/// The plaintext length must be known up front because the signed prelude records the segment
+/// geometry. The reader must yield exactly `plaintext_len` bytes: fewer is an error, and any
+/// extra byte is an error too, so a declared length can never silently mismatch the payload.
+///
+/// Returns the number of envelope bytes written.
+#[allow(clippy::too_many_arguments)] // mirrors encrypt_message's positional style plus the two stream inputs
+pub fn encrypt_stream<R: CryptoRng + RngCore, I: Read, O: Write>(
+    sender_identity: &str,
+    sender_keys: &SyftPrivateKeys,
+    recipients: &[EncryptionRecipient<'_>],
+    plaintext_len: u64,
+    reader: &mut I,
+    writer: &mut O,
+    segment_size: Option<usize>,
+    filename_hint: Option<&str>,
+    rng: &mut R,
+) -> Result<u64> {
+    let sender_public_bundle = sender_keys.to_public_bundle(rng)?;
+    let (file_key, recipient_vec, wrappings) =
+        generate_and_wrap_file_key(sender_keys, recipients, rng)?;
+
+    let layout =
+        SegmentLayout::for_plaintext(plaintext_len, segment_size.unwrap_or(DEFAULT_SEGMENT_SIZE))?;
+
+    let mut nonce_prefix = Zeroizing::new([0u8; STREAM_NONCE_PREFIX_LEN]);
+    rng.fill_bytes(nonce_prefix.as_mut());
+    let nonce_b64 = URL_SAFE_NO_PAD.encode(nonce_prefix.as_ref());
+
+    let meta = CipherMeta {
+        cipher_suite: STREAM_CIPHER_SUITE,
+        cipher_nonce_b64: &nonce_b64,
+        segment_count: layout.segment_count,
+        last_segment_bytes: layout.last_segment_bytes,
+        ciphertext_len: layout.ciphertext_len,
+        filename_hint,
+    };
+
+    let header = build_envelope_header_with_wrappings(
+        sender_identity,
+        sender_keys.identity(),
+        &sender_public_bundle,
+        &recipient_vec,
+        &wrappings,
+        &meta,
+        rng,
+    )?;
+    writer.write_all(&header)?;
+    let mut written = u64::try_from(header.len()).map_err(|_| "header too large")?;
+
+    let mut segment = Zeroizing::new(vec![0u8; layout.segment_size]);
+    for index in 0..layout.segment_count {
+        let last = layout.is_last(index);
+        let plaintext_len = usize::try_from(layout.segment_plaintext_len(index))
+            .map_err(|_| "segment does not fit in memory")?;
+        let buf = &mut segment[..plaintext_len];
+        reader
+            .read_exact(buf)
+            .map_err(|_| "plaintext ended before the declared length")?;
+        let sealed = encrypt_segment(&file_key, &nonce_prefix, index, last, buf)?;
+        writer.write_all(&sealed)?;
+        written += u64::try_from(sealed.len()).map_err(|_| "segment too large")?;
+    }
+
+    // The declared length is signed into the prelude: refuse to silently drop trailing input.
+    let mut probe = [0u8; 1];
+    if reader.read(&mut probe)? != 0 {
+        return Err("plaintext is longer than the declared length".into());
+    }
+
+    writer.flush()?;
+    Ok(written)
+}
+
+/// Authenticate the envelope header for `recipient_identity` and unwrap the file key.
+///
+/// Performs the sender signature/fingerprint checks, the constant-time recipient lookup, the
+/// X3DH derivation, and the key unwrap. Shared by [`decrypt_message`] and [`decrypt_stream`].
+fn authenticate_and_unwrap_file_key(
     recipient_identity: &str,
     recipient_keys: &SyftPrivateKeys,
     sender_bundle: &SyftPublicKeyBundle,
-    parsed: &ParsedEnvelope,
-) -> Result<Vec<u8>> {
+    prelude: &EnvelopePrelude,
+    envelope_signature_valid: bool,
+) -> Result<Zeroizing<[u8; 32]>> {
     let signature_valid = sender_bundle.verify_signatures();
-    let envelope_signature_valid =
-        verify_signature(parsed, &sender_bundle.identity_signing_public_key).is_ok();
     let expected_fp = sender_bundle.identity_fingerprint();
     let fingerprint_match = expected_fp
         .as_bytes()
-        .ct_eq(parsed.prelude.sender.ik_fingerprint.as_bytes())
+        .ct_eq(prelude.sender.ik_fingerprint.as_bytes())
         .unwrap_u8();
     let combined = Choice::from(signature_valid as u8)
         & Choice::from(envelope_signature_valid as u8)
@@ -132,13 +252,13 @@ pub fn decrypt_message(
         return Err(KeyError::InvalidSignature);
     }
 
-    if parsed.prelude.cipher.suite != FILE_CIPHER_SUITE {
+    if prelude.cipher.suite != FILE_CIPHER_SUITE && prelude.cipher.suite != STREAM_CIPHER_SUITE {
         return Err(KeyError::InvalidFormat);
     }
 
     let mut recipient_index = 0usize;
     let mut match_choice = Choice::from(0);
-    for (idx, info) in parsed.prelude.recipients.iter().enumerate() {
+    for (idx, info) in prelude.recipients.iter().enumerate() {
         let eq = ct_identity_match(info.identity.as_deref(), recipient_identity);
         let eq_mask = usize::from(eq.unwrap_u8());
         recipient_index = eq_mask * idx + (1 - eq_mask) * recipient_index;
@@ -148,20 +268,10 @@ pub fn decrypt_message(
         return Err(KeyError::RecipientNotFound);
     }
 
-    let wrapping = parsed
-        .prelude
+    let wrapping = prelude
         .wrappings
         .get(recipient_index)
         .ok_or(KeyError::InvalidSignature)?;
-
-    let nonce_bytes = URL_SAFE_NO_PAD
-        .decode(&parsed.prelude.cipher.nonce)
-        .map_err(|_| KeyError::InvalidFormat)?;
-    if nonce_bytes.len() != 24 {
-        return Err(KeyError::InvalidFormat);
-    }
-    let mut nonce = Zeroizing::new([0u8; 24]);
-    nonce.copy_from_slice(&nonce_bytes);
 
     // Decode wrapping ciphertext: wrapped_key (72 bytes)
     let wrapped_file_key = URL_SAFE_NO_PAD
@@ -176,8 +286,72 @@ pub fn decrypt_message(
     let x3dh_material = derive_recipient_shared_material(recipient_keys, sender_bundle, wrapping)?;
 
     // Unwrap file key using X3DH material
-    let file_key = unwrap_file_key(x3dh_material.as_ref(), &wrapped_file_key)?;
+    unwrap_file_key(x3dh_material.as_ref(), &wrapped_file_key)
+}
 
+/// Decode the prelude nonce for the whole-payload suite (24 bytes).
+fn file_nonce(prelude: &EnvelopePrelude) -> Result<Zeroizing<[u8; 24]>> {
+    let nonce_bytes = URL_SAFE_NO_PAD
+        .decode(&prelude.cipher.nonce)
+        .map_err(|_| KeyError::InvalidFormat)?;
+    if nonce_bytes.len() != 24 {
+        return Err(KeyError::InvalidFormat);
+    }
+    let mut nonce = Zeroizing::new([0u8; 24]);
+    nonce.copy_from_slice(&nonce_bytes);
+    Ok(nonce)
+}
+
+/// Decode the prelude nonce prefix for the streaming suite (19 bytes) and the segment layout.
+fn stream_geometry(
+    prelude: &EnvelopePrelude,
+) -> Result<(Zeroizing<[u8; STREAM_NONCE_PREFIX_LEN]>, SegmentLayout)> {
+    let prefix_bytes = URL_SAFE_NO_PAD
+        .decode(&prelude.cipher.nonce)
+        .map_err(|_| KeyError::InvalidFormat)?;
+    if prefix_bytes.len() != STREAM_NONCE_PREFIX_LEN {
+        return Err(KeyError::InvalidFormat);
+    }
+    let mut prefix = Zeroizing::new([0u8; STREAM_NONCE_PREFIX_LEN]);
+    prefix.copy_from_slice(&prefix_bytes);
+    let layout = SegmentLayout::from_cipher_info(
+        prelude.cipher.segment_count,
+        prelude.cipher.last_segment_bytes,
+        prelude.cipher.ciphertext_len,
+    )?;
+    Ok((prefix, layout))
+}
+
+/// Decrypt an envelope for the active recipient.
+///
+/// Opens envelopes sealed with either cipher suite. For the streaming suite the whole ciphertext
+/// is still expected in `parsed`; use [`decrypt_stream`] to open large envelopes without
+/// loading them.
+pub fn decrypt_message(
+    recipient_identity: &str,
+    recipient_keys: &SyftPrivateKeys,
+    sender_bundle: &SyftPublicKeyBundle,
+    parsed: &ParsedEnvelope,
+) -> Result<Vec<u8>> {
+    let envelope_signature_valid =
+        verify_signature(parsed, &sender_bundle.identity_signing_public_key).is_ok();
+    let file_key = authenticate_and_unwrap_file_key(
+        recipient_identity,
+        recipient_keys,
+        sender_bundle,
+        &parsed.prelude,
+        envelope_signature_valid,
+    )?;
+
+    if parsed.prelude.cipher.suite == STREAM_CIPHER_SUITE {
+        let (prefix, layout) = stream_geometry(&parsed.prelude)?;
+        let mut plaintext = Vec::with_capacity(usize::try_from(layout.ciphertext_len).unwrap_or(0));
+        let mut reader = parsed.ciphertext.as_slice();
+        decrypt_segments(&file_key, &prefix, &layout, &mut reader, &mut plaintext)?;
+        return Ok(plaintext);
+    }
+
+    let nonce = file_nonce(&parsed.prelude)?;
     let cipher = XChaCha20Poly1305::new(Key::from_slice(&*file_key));
     cipher
         .decrypt(
@@ -188,6 +362,100 @@ pub fn decrypt_message(
             },
         )
         .map_err(|_| KeyError::DecryptionFailed)
+}
+
+/// Read, open, and write every segment described by `layout`, then require end of input.
+fn decrypt_segments<I: Read, O: Write>(
+    file_key: &[u8; 32],
+    nonce_prefix: &[u8; STREAM_NONCE_PREFIX_LEN],
+    layout: &SegmentLayout,
+    reader: &mut I,
+    writer: &mut O,
+) -> Result<u64> {
+    let mut segment = vec![0u8; layout.segment_size + TAG_LEN];
+    let mut written = 0u64;
+    for index in 0..layout.segment_count {
+        let last = layout.is_last(index);
+        let ciphertext_len = usize::try_from(layout.segment_ciphertext_len(index))
+            .map_err(|_| "segment does not fit in memory")?;
+        let buf = &mut segment[..ciphertext_len];
+        reader
+            .read_exact(buf)
+            .map_err(|_| KeyError::DecryptionFailed)?;
+        let opened = Zeroizing::new(decrypt_segment(file_key, nonce_prefix, index, last, buf)?);
+        writer.write_all(&opened)?;
+        written += u64::try_from(opened.len()).map_err(|_| "segment too large")?;
+    }
+
+    // The last segment carries the terminal flag, so anything after it is an appended forgery.
+    let mut probe = [0u8; 1];
+    if reader.read(&mut probe)? != 0 {
+        return Err(KeyError::DecryptionFailed);
+    }
+    Ok(written)
+}
+
+/// Decrypt an envelope read from `reader` for the active recipient, writing the plaintext to
+/// `writer`, while holding at most one segment in memory.
+///
+/// The header is parsed and its signature verified before any ciphertext is read. Envelopes
+/// sealed with the streaming suite are opened segment by segment; envelopes sealed with the
+/// whole-payload suite are also accepted, but their ciphertext is necessarily buffered.
+///
+/// Returns the number of plaintext bytes written.
+pub fn decrypt_stream<I: Read, O: Write>(
+    recipient_identity: &str,
+    recipient_keys: &SyftPrivateKeys,
+    sender_bundle: &SyftPublicKeyBundle,
+    reader: &mut I,
+    writer: &mut O,
+) -> Result<u64> {
+    let header: ParsedEnvelopeHeader = parse_envelope_header(reader)?;
+    let envelope_signature_valid =
+        verify_header_signature(&header, &sender_bundle.identity_signing_public_key).is_ok();
+    let file_key = authenticate_and_unwrap_file_key(
+        recipient_identity,
+        recipient_keys,
+        sender_bundle,
+        &header.prelude,
+        envelope_signature_valid,
+    )?;
+
+    if header.prelude.cipher.suite == STREAM_CIPHER_SUITE {
+        let (prefix, layout) = stream_geometry(&header.prelude)?;
+        let written = decrypt_segments(&file_key, &prefix, &layout, reader, writer)?;
+        writer.flush()?;
+        return Ok(written);
+    }
+
+    // Whole-payload suite: the AEAD needs the full ciphertext, so buffer exactly what the
+    // signed prelude declares and refuse anything beyond it.
+    let ciphertext_len = usize::try_from(header.prelude.cipher.ciphertext_len)
+        .map_err(|_| "ciphertext does not fit in memory")?;
+    let mut ciphertext = vec![0u8; ciphertext_len];
+    reader
+        .read_exact(&mut ciphertext)
+        .map_err(|_| KeyError::DecryptionFailed)?;
+    let mut probe = [0u8; 1];
+    if reader.read(&mut probe)? != 0 {
+        return Err(KeyError::DecryptionFailed);
+    }
+    let nonce = file_nonce(&header.prelude)?;
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(&*file_key));
+    let plaintext = Zeroizing::new(
+        cipher
+            .decrypt(
+                XNonce::from_slice(&*nonce),
+                Payload {
+                    msg: &ciphertext,
+                    aad: FILE_AAD,
+                },
+            )
+            .map_err(|_| KeyError::DecryptionFailed)?,
+    );
+    writer.write_all(&plaintext)?;
+    writer.flush()?;
+    u64::try_from(plaintext.len()).map_err(|_| "plaintext too large".into())
 }
 
 #[cfg(test)]
